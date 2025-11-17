@@ -330,10 +330,10 @@ export async function execute(
         });
 
       if (gif) {
-        embed.setImage(gif);
+        await interaction.reply({ embeds: [embed], content: gif });
+      } else {
+        await interaction.reply({ embeds: [embed] });
       }
-
-      await interaction.reply({ embeds: [embed] });
       return;
     }
 
