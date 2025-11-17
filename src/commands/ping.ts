@@ -5,6 +5,7 @@ import {
   PermissionsBitField,
   type GuildMember,
 } from "discord.js";
+import { getFunRoles } from "../db/socialDb.js";
 
 const DEFAULT_SALUTE_GIF =
   "https://media.giphy.com/media/3oEduO2i4fkpZr7QyQ/giphy.gif";
@@ -93,6 +94,19 @@ function isFunOperator(interaction: ChatInputCommandInteraction): boolean {
     return true;
   }
 
+  const guildId = interaction.guildId;
+  if (!guildId) return false;
+
+  const funRoles = getFunRoles(guildId);
+  if (funRoles.length === 0) {
+    // No special roles configured => only admins/owner can use.
+    return false;
+  }
+
+  if (member.roles.cache.some((role) => funRoles.includes(role.id))) {
+    return true;
+  }
+
   return false;
 }
 
@@ -140,7 +154,7 @@ export async function execute(
     return;
   }
 
-  // We already confirmed it's text-based; TS can chill.
+  // We already know it's text-based; dodge TS whining.
   const textChannel: any = channel;
 
   const embed = new EmbedBuilder()
