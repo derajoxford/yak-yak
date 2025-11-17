@@ -16,11 +16,37 @@ import {
   addTrigger,
   removeTrigger,
   getTriggers,
+  getRandomGif,
   type GifKind,
 } from "../db/socialDb.js";
 
 function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// Fallback gifs if the pool is empty or broken
+const FALLBACK_POSITIVE_GIFS = [
+  "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
+  "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
+  "https://media.giphy.com/media/10UeedrT5MIfPG/giphy.gif",
+];
+
+const FALLBACK_NEGATIVE_GIFS = [
+  "https://media.giphy.com/media/3o6Zt8zb1P4LZP4zIi/giphy.gif",
+  "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif",
+  "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif",
+];
+
+function pickSocialGif(
+  guildId: string,
+  positive: boolean,
+): string | null {
+  const kind: GifKind = positive ? "positive" : "negative";
+  const fromPool = getRandomGif(guildId, kind);
+  if (fromPool) return fromPool;
+
+  const pool = positive ? FALLBACK_POSITIVE_GIFS : FALLBACK_NEGATIVE_GIFS;
+  return pool.length ? pick(pool) : null;
 }
 
 function isFunOperator(interaction: ChatInputCommandInteraction): boolean {
@@ -288,6 +314,7 @@ export async function execute(
       const title = positive
         ? "Social Credit Awarded"
         : "Social Credit Deducted";
+      const gif = pickSocialGif(guildId, positive);
 
       const embed = new EmbedBuilder()
         .setTitle(title)
@@ -301,6 +328,10 @@ export async function execute(
             ? `Issued by ${interaction.user.tag} – ${reason}`
             : `Issued by ${interaction.user.tag}`,
         });
+
+      if (gif) {
+        embed.setImage(gif);
+      }
 
       await interaction.reply({ embeds: [embed] });
       return;
