@@ -10,19 +10,14 @@ import {
   getScore,
   getLeaderboard,
   getFunRoles,
+  addGif,
+  removeGif,
+  listGifs,
+  addTrigger,
+  removeTrigger,
+  getTriggers,
+  type GifKind,
 } from "../db/socialDb.js";
-
-const POSITIVE_GIFS = [
-  "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
-  "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-  "https://media.giphy.com/media/10UeedrT5MIfPG/giphy.gif",
-];
-
-const NEGATIVE_GIFS = [
-  "https://media.giphy.com/media/3o6Zt8zb1P4LZP4zIi/giphy.gif",
-  "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif",
-  "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif",
-];
 
 function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -71,7 +66,8 @@ function scoreLabel(score: number): string {
 
 export const data = new SlashCommandBuilder()
   .setName("social")
-  .setDescription("Manage and view Social Credit.")
+  .setDescription("Social Credit controls.")
+  // score subcommands
   .addSubcommand((sub) =>
     sub
       .setName("add")
@@ -148,6 +144,104 @@ export const data = new SlashCommandBuilder()
           .setMinValue(1)
           .setMaxValue(25),
       ),
+  )
+  // gif subcommand group
+  .addSubcommandGroup((group) =>
+    group
+      .setName("gif")
+      .setDescription("Manage Social Credit GIF pools.")
+      .addSubcommand((sub) =>
+        sub
+          .setName("add")
+          .setDescription("Add a GIF to the positive/negative pool.")
+          .addStringOption((opt) =>
+            opt
+              .setName("kind")
+              .setDescription("Positive or negative")
+              .setRequired(true)
+              .addChoices(
+                { name: "Positive", value: "positive" },
+                { name: "Negative", value: "negative" },
+              ),
+          )
+          .addStringOption((opt) =>
+            opt
+              .setName("url")
+              .setDescription("GIF URL")
+              .setRequired(true),
+          ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("list")
+          .setDescription("List GIFs in the pool.")
+          .addStringOption((opt) =>
+            opt
+              .setName("kind")
+              .setDescription("Filter by kind")
+              .addChoices(
+                { name: "Positive", value: "positive" },
+                { name: "Negative", value: "negative" },
+              ),
+          ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("remove")
+          .setDescription("Remove a GIF from the pool.")
+          .addIntegerOption((opt) =>
+            opt
+              .setName("id")
+              .setDescription("GIF ID (from /social gif list)")
+              .setRequired(true),
+          ),
+      ),
+  )
+  // triggers subcommand group
+  .addSubcommandGroup((group) =>
+    group
+      .setName("triggers")
+      .setDescription("Manage keyword-based Social Credit triggers.")
+      .addSubcommand((sub) =>
+        sub
+          .setName("add")
+          .setDescription("Add a keyword/phrase trigger.")
+          .addStringOption((opt) =>
+            opt
+              .setName("phrase")
+              .setDescription("Phrase to match in messages.")
+              .setRequired(true),
+          )
+          .addIntegerOption((opt) =>
+            opt
+              .setName("delta")
+              .setDescription("Social Credit change (positive or negative).")
+              .setRequired(true)
+              .setMinValue(-100)
+              .setMaxValue(100),
+          )
+          .addBooleanOption((opt) =>
+            opt
+              .setName("case_sensitive")
+              .setDescription("Case-sensitive match? Default: false."),
+          ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("list")
+          .setDescription("List all triggers."),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("remove")
+          .setDescription("Remove a trigger by ID.")
+          .addIntegerOption((opt) =>
+            opt
+              .setName("id")
+              .setDescription("Trigger ID (from /social triggers list)")
+              .setRequired(true),
+          ),
+      ),
   );
 
 export async function execute(
@@ -162,100 +256,239 @@ export async function execute(
   }
 
   const guildId = interaction.guildId;
+  const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand(true);
 
-  if (sub === "add" || sub === "remove") {
+  // ----- Score subcommands (no group) -----
+  if (!group) {
+    if (sub === "add" || sub === "remove") {
+      if (!isFunOperator(interaction)) {
+        await interaction.reply({
+          content:
+            "You do not have sufficient authority to modify Social Credit.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const target = interaction.options.getUser("target", true);
+      const amount = interaction.options.getInteger("amount") ?? 1;
+      const reason = interaction.options.getString("reason");
+      const delta = sub === "add" ? amount : -amount;
+
+      const { previous, current } = adjustScore(
+        guildId,
+        interaction.user.id,
+        target.id,
+        delta,
+        reason ?? null,
+      );
+
+      const positive = delta > 0;
+      const title = positive
+        ? "Social Credit Awarded"
+        : "Social Credit Deducted";
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(
+          `${target} has been **${
+            positive ? "blessed" : "punished"
+          }**.\n\nDelta: **${delta > 0 ? `+${delta}` : delta}**\nPrevious: **${previous}**\nCurrent: **${current}**`,
+        )
+        .setFooter({
+          text: reason
+            ? `Issued by ${interaction.user.tag} – ${reason}`
+            : `Issued by ${interaction.user.tag}`,
+        });
+
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+
+    if (sub === "show") {
+      const target =
+        interaction.options.getUser("target") ?? interaction.user;
+      const score = getScore(guildId, target.id);
+      const label = scoreLabel(score);
+
+      const embed = new EmbedBuilder()
+        .setTitle("Social Credit Report")
+        .setDescription(
+          `${target} has a Social Credit score of **${score}**.\nStatus: **${label}**`,
+        );
+
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+
+    if (sub === "leaderboard") {
+      const direction =
+        (interaction.options.getString("direction") as
+          | "top"
+          | "bottom"
+          | null) ?? "top";
+      const limit = interaction.options.getInteger("limit") ?? 10;
+
+      const rows = getLeaderboard(guildId, direction, limit);
+      if (rows.length === 0) {
+        await interaction.reply({
+          content: "No Social Credit data yet.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const lines = rows.map((row, idx) => {
+        const rank = idx + 1;
+        return `**#${rank}** <@${row.userId}> – **${row.score}**`;
+      });
+
+      const title =
+        direction === "bottom"
+          ? `Social Credit Leaderboard – Bottom ${rows.length}`
+          : `Social Credit Leaderboard – Top ${rows.length}`;
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(lines.join("\n"));
+
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+  }
+
+  // ----- GIF subcommands -----
+  if (group === "gif") {
     if (!isFunOperator(interaction)) {
       await interaction.reply({
         content:
-          "You do not have sufficient authority to modify Social Credit.",
+          "You do not have sufficient authority to modify GIF pools.",
         ephemeral: true,
       });
       return;
     }
 
-    const target = interaction.options.getUser("target", true);
-    const amount = interaction.options.getInteger("amount") ?? 1;
-    const reason = interaction.options.getString("reason");
-    const delta = sub === "add" ? amount : -amount;
+    if (sub === "add") {
+      const kind = interaction.options.getString("kind", true) as GifKind;
+      const url = interaction.options.getString("url", true);
 
-    const { previous, current } = adjustScore(
-      guildId,
-      interaction.user.id,
-      target.id,
-      delta,
-      reason ?? null,
-    );
-
-    const positive = delta > 0;
-    const gif = positive ? pick(POSITIVE_GIFS) : pick(NEGATIVE_GIFS);
-
-    const embed = new EmbedBuilder()
-      .setTitle("Social Credit Adjustment")
-      .setDescription(
-        `${target} has been **${
-          positive ? "blessed" : "punished"
-        }**.\n\nDelta: **${delta > 0 ? `+${delta}` : delta}**\nPrevious: **${previous}**\nCurrent: **${current}**`,
-      )
-      .setImage(gif)
-      .setFooter({
-        text: reason
-          ? `Issued by ${interaction.user.tag} – ${reason}`
-          : `Issued by ${interaction.user.tag}`,
+      const id = addGif(guildId, kind, url);
+      await interaction.reply({
+        content: `✅ Added GIF #${id} to **${kind}** pool.`,
+        ephemeral: true,
       });
+      return;
+    }
 
-    await interaction.reply({ embeds: [embed] });
-    return;
-  }
+    if (sub === "list") {
+      const kindOpt = interaction.options.getString("kind") as
+        | GifKind
+        | null;
+      const rows = listGifs(guildId, kindOpt ?? undefined);
 
-  if (sub === "show") {
-    const target =
-      interaction.options.getUser("target") ?? interaction.user;
-    const score = getScore(guildId, target.id);
-    const label = scoreLabel(score);
+      if (rows.length === 0) {
+        await interaction.reply({
+          content: "No GIFs configured yet.",
+          ephemeral: true,
+        });
+        return;
+      }
 
-    const embed = new EmbedBuilder()
-      .setTitle("Social Credit Report")
-      .setDescription(
-        `${target} has a Social Credit score of **${score}**.\nStatus: **${label}**`,
+      const lines = rows.map(
+        (r) => `#${r.id} [${r.kind}] ${r.url}`,
       );
 
-    await interaction.reply({ embeds: [embed] });
-    return;
-  }
-
-  if (sub === "leaderboard") {
-    const direction =
-      (interaction.options.getString("direction") as
-        | "top"
-        | "bottom"
-        | null) ?? "top";
-    const limit = interaction.options.getInteger("limit") ?? 10;
-
-    const rows = getLeaderboard(guildId, direction, limit);
-    if (rows.length === 0) {
       await interaction.reply({
-        content: "No Social Credit data yet.",
+        content: "GIF pool:\n" + lines.join("\n"),
         ephemeral: true,
       });
       return;
     }
 
-    const lines = rows.map((row, idx) => {
-      const rank = idx + 1;
-      return `**#${rank}** <@${row.userId}> – **${row.score}**`;
-    });
+    if (sub === "remove") {
+      const id = interaction.options.getInteger("id", true);
+      const ok = removeGif(guildId, id);
+      if (!ok) {
+        await interaction.reply({
+          content: `No GIF found with ID #${id}.`,
+          ephemeral: true,
+        });
+        return;
+      }
 
-    const title =
-      direction === "bottom"
-        ? `Social Credit Leaderboard – Bottom ${rows.length}`
-        : `Social Credit Leaderboard – Top ${rows.length}`;
+      await interaction.reply({
+        content: `✅ Removed GIF #${id} from the pool.`,
+        ephemeral: true,
+      });
+      return;
+    }
+  }
 
-    const embed = new EmbedBuilder()
-      .setTitle(title)
-      .setDescription(lines.join("\n"));
+  // ----- Trigger subcommands -----
+  if (group === "triggers") {
+    if (!isFunOperator(interaction)) {
+      await interaction.reply({
+        content:
+          "You do not have sufficient authority to manage triggers.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-    await interaction.reply({ embeds: [embed] });
-    return;
+    if (sub === "add") {
+      const phrase = interaction.options.getString("phrase", true);
+      const delta = interaction.options.getInteger("delta", true);
+      const caseSensitive =
+        interaction.options.getBoolean("case_sensitive") ?? false;
+
+      const id = addTrigger(guildId, phrase, delta, caseSensitive);
+      await interaction.reply({
+        content: `✅ Added trigger #${id}: "${phrase}" → ${delta > 0 ? "+" : ""}${delta} (caseSensitive=${caseSensitive})`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (sub === "list") {
+      const rows = getTriggers(guildId);
+      if (rows.length === 0) {
+        await interaction.reply({
+          content: "No triggers configured yet.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const lines = rows.map((r) => {
+        const cs = r.caseSensitive ? "CS" : "CI";
+        const deltaStr = r.delta > 0 ? `+${r.delta}` : `${r.delta}`;
+        return `#${r.id} "${r.phrase}" → ${deltaStr} (${cs})`;
+      });
+
+      await interaction.reply({
+        content: "Triggers:\n" + lines.join("\n"),
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (sub === "remove") {
+      const id = interaction.options.getInteger("id", true);
+      const ok = removeTrigger(guildId, id);
+      if (!ok) {
+        await interaction.reply({
+          content: `No trigger found with ID #${id}.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.reply({
+        content: `✅ Removed trigger #${id}.`,
+        ephemeral: true,
+      });
+      return;
+    }
   }
 }
