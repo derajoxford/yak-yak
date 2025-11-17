@@ -129,7 +129,7 @@ client.on(Events.MessageCreate, async (message) => {
       );
 
       const positive = trig.delta > 0;
-      const gif = pickTriggerGif(message.guildId, positive) ?? undefined;
+      const gif = pickTriggerGif(message.guildId, positive);
 
       const embed = new EmbedBuilder()
         .setTitle(
@@ -143,10 +143,10 @@ client.on(Events.MessageCreate, async (message) => {
         .setFooter({ text: "Automated Social Credit trigger" });
 
       if (gif) {
-        embed.setImage(gif);
+        await message.channel.send({ embeds: [embed], content: gif });
+      } else {
+        await message.channel.send({ embeds: [embed] });
       }
-
-      await message.channel.send({ embeds: [embed] });
     }
   } catch (err) {
     console.error("Error handling message trigger:", err);
