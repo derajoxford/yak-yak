@@ -24,35 +24,11 @@ if (!guildId) {
   );
 }
 
-function pick<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-// Fallback gifs for triggers if pool is empty
-const FALLBACK_POSITIVE_GIFS = [
-  "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
-  "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-  "https://media.giphy.com/media/10UeedrT5MIfPG/giphy.gif",
-];
-
-const FALLBACK_NEGATIVE_GIFS = [
-  "https://media.giphy.com/media/3o6Zt8zb1P4LZP4zIi/giphy.gif",
-  "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif",
-  "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif",
-];
-
 function pickTriggerGif(
-  gId: string,
+  guildId: string,
   positive: boolean,
 ): string | null {
-  const fromPool = getRandomGif(
-    gId,
-    positive ? "positive" : "negative",
-  );
-  if (fromPool) return fromPool;
-
-  const pool = positive ? FALLBACK_POSITIVE_GIFS : FALLBACK_NEGATIVE_GIFS;
-  return pool.length ? pick(pool) : null;
+  return getRandomGif(guildId, positive ? "positive" : "negative");
 }
 
 const client = new Client({
