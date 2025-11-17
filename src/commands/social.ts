@@ -176,8 +176,12 @@ export const data = new SlashCommandBuilder()
           .addStringOption((opt) =>
             opt
               .setName("url")
-              .setDescription("GIF URL")
-              .setRequired(true),
+              .setDescription("GIF URL (optional if you upload a file)"),
+          )
+          .addAttachmentOption((opt) =>
+            opt
+              .setName("file")
+              .setDescription("Upload a GIF instead of providing a URL"),
           ),
       )
       .addSubcommand((sub) =>
@@ -315,10 +319,10 @@ export async function execute(
         });
 
       if (gif) {
-        await interaction.reply({ embeds: [embed], content: gif });
-      } else {
-        await interaction.reply({ embeds: [embed] });
+        embed.setImage(gif);
       }
+
+      await interaction.reply({ embeds: [embed] });
       return;
     }
 
@@ -387,7 +391,18 @@ export async function execute(
 
     if (sub === "add") {
       const kind = interaction.options.getString("kind", true) as GifKind;
-      const url = interaction.options.getString("url", true);
+      const urlOpt = interaction.options.getString("url");
+      const file = interaction.options.getAttachment("file");
+
+      const url = urlOpt ?? file?.url ?? null;
+      if (!url) {
+        await interaction.reply({
+          content:
+            "You must provide either a GIF URL or upload a GIF file.",
+          ephemeral: true,
+        });
+        return;
+      }
 
       const id = addGif(guildId, kind, url);
       await interaction.reply({
