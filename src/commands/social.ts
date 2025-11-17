@@ -1,3 +1,4 @@
+// src/commands/social.ts
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
@@ -9,7 +10,6 @@ import {
   adjustScore,
   getScore,
   getLeaderboard,
-  getFunRoles,
   addGif,
   removeGif,
   listGifs,
@@ -22,7 +22,12 @@ import {
 
 // ---- Helpers ----
 
-function isFunOperator(interaction: ChatInputCommandInteraction): boolean {
+// Admin-only gate for /social:
+// - Server admins (Administrator or ManageGuild)
+// - OWNER_ID from env (you)
+function isSocialAdmin(
+  interaction: ChatInputCommandInteraction,
+): boolean {
   const member = interaction.member as GuildMember | null;
   if (!member) return false;
 
@@ -35,19 +40,6 @@ function isFunOperator(interaction: ChatInputCommandInteraction): boolean {
 
   const ownerId = process.env.OWNER_ID;
   if (ownerId && interaction.user.id === ownerId) {
-    return true;
-  }
-
-  const guildId = interaction.guildId;
-  if (!guildId) return false;
-
-  const funRoles = getFunRoles(guildId);
-  if (funRoles.length === 0) {
-    // No roles configured: only admins/owner can use it.
-    return false;
-  }
-
-  if (member.roles.cache.some((role) => funRoles.includes(role.id))) {
     return true;
   }
 
@@ -75,12 +67,12 @@ function pickSocialGif(
 
 export const data = new SlashCommandBuilder()
   .setName("social")
-  .setDescription("Social Credit controls.")
+  .setDescription("Admin Social Credit controls.")
   // score subcommands
   .addSubcommand((sub) =>
     sub
       .setName("add")
-      .setDescription("Add Social Credit to a user.")
+      .setDescription("Add Social Credit to a user. (admin only)")
       .addUserOption((opt) =>
         opt
           .setName("target")
@@ -103,7 +95,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub
       .setName("remove")
-      .setDescription("Remove Social Credit from a user.")
+      .setDescription("Remove Social Credit from a user. (admin only)")
       .addUserOption((opt) =>
         opt
           .setName("target")
@@ -126,17 +118,17 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub
       .setName("show")
-      .setDescription("Show a user's Social Credit.")
+      .setDescription("Show a user's Social Credit. (admin only)")
       .addUserOption((opt) =>
         opt
           .setName("target")
-          .setDescription("Whose Social Credit to view (defaults to you)."),
+          .setDescription("Whose Social Credit to view."),
       ),
   )
   .addSubcommand((sub) =>
     sub
       .setName("leaderboard")
-      .setDescription("Show the Social Credit leaderboard.")
+      .setDescription("Show the Social Credit leaderboard. (admin only)")
       .addStringOption((opt) =>
         opt
           .setName("direction")
@@ -158,7 +150,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("gif")
-      .setDescription("Manage Social Credit GIF pools.")
+      .setDescription("Manage Social Credit GIF pools. (admin only)")
       .addSubcommand((sub) =>
         sub
           .setName("add")
@@ -187,16 +179,7 @@ export const data = new SlashCommandBuilder()
       .addSubcommand((sub) =>
         sub
           .setName("list")
-          .setDescription("List GIFs in the pool.")
-          .addStringOption((opt) =>
-            opt
-              .setName("kind")
-              .setDescription("Filter by kind")
-              .addChoices(
-                { name: "Positive", value: "positive" },
-                { name: "Negative", value: "negative" },
-              ),
-          ),
+          .setDescription("List GIFs in the pool."),
       )
       .addSubcommand((sub) =>
         sub
@@ -214,7 +197,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("triggers")
-      .setDescription("Manage keyword-based Social Credit triggers.")
+      .setDescription("Manage keyword-based Social Credit triggers. (admin only)")
       .addSubcommand((sub) =>
         sub
           .setName("add")
@@ -274,18 +257,18 @@ export async function execute(
   const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand(true);
 
+  // Hard gate everything here to admins
+  if (!isSocialAdmin(interaction)) {
+    await interaction.reply({
+      content: "You do not have sufficient authority to run /social.",
+      ephemeral: true,
+    });
+    return;
+  }
+
   // ----- Score subcommands (no group) -----
   if (!group) {
     if (sub === "add" || sub === "remove") {
-      if (!isFunOperator(interaction)) {
-        await interaction.reply({
-          content:
-            "You do not have sufficient authority to modify Social Credit.",
-          ephemeral: true,
-        });
-        return;
-      }
-
       const target = interaction.options.getUser("target", true);
       const amount = interaction.options.getInteger("amount") ?? 1;
       const reason = interaction.options.getString("reason");
@@ -384,13 +367,13 @@ export async function execute(
           : `📊 Social Credit Leaderboard — Top ${rows.length}`;
 
       const color =
-        direction === "bottom" ? 0xff5555 : 0x55ff99; // red-ish for bottom, green-ish for top
+        direction === "bottom" ? 0xff5555 : 0x55ff99;
 
       const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(lines.join("\n"))
         .setColor(color)
-        .setFooter({ text: "Social Credit Bureau" });
+        .setFooter({ text: "Social Credit Bureau (Admin View)" });
 
       await interaction.reply({ embeds: [embed] });
       return;
@@ -399,15 +382,6 @@ export async function execute(
 
   // ----- GIF subcommands -----
   if (group === "gif") {
-    if (!isFunOperator(interaction)) {
-      await interaction.reply({
-        content:
-          "You do not have sufficient authority to modify GIF pools.",
-        ephemeral: true,
-      });
-      return;
-    }
-
     if (sub === "add") {
       const kind = interaction.options.getString("kind", true) as GifKind;
       const urlOpt = interaction.options.getString("url");
@@ -477,15 +451,6 @@ export async function execute(
 
   // ----- Trigger subcommands -----
   if (group === "triggers") {
-    if (!isFunOperator(interaction)) {
-      await interaction.reply({
-        content:
-          "You do not have sufficient authority to manage triggers.",
-        ephemeral: true,
-      });
-      return;
-    }
-
     if (sub === "add") {
       const phrase = interaction.options.getString("phrase", true);
       const delta = interaction.options.getInteger("delta", true);
