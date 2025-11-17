@@ -18,11 +18,12 @@ export interface Command {
   execute(interaction: ChatInputCommandInteraction): Promise<void>;
 }
 
-// IMPORTANT: this array is the single source of truth for commands
+// Single source of truth for all commands
 const commands: Command[] = [ping, social, funGate];
 
 export const commandMap = new Map<string, Command>(
   commands.map((cmd) => [cmd.data.name, cmd]),
 );
 
+// Default export for the registry script
 export default commands;
