@@ -4,7 +4,7 @@ import path from "node:path";
 
 const dbPath =
   process.env.DB_PATH ||
-  path.join(process.cwd(), "data", "social-credit.db");
+  path.join(process.cwd(), "data", "yak-yak-social.db");
 
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
@@ -35,13 +35,28 @@ CREATE TABLE IF NOT EXISTS social_log (
   reason     TEXT,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS social_gifs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id   TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('positive', 'negative')),
+  url        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS social_triggers (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id       TEXT NOT NULL,
+  phrase         TEXT NOT NULL,
+  delta          INTEGER NOT NULL,
+  case_sensitive INTEGER NOT NULL DEFAULT 0
+);
 `);
 
 function now(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-// --- Role gating ---
+// -------- Role gates --------
 
 export function getFunRoles(guildId: string): string[] {
   const rows = db
@@ -52,17 +67,17 @@ export function getFunRoles(guildId: string): string[] {
 
 export function addFunRole(guildId: string, roleId: string): void {
   db.prepare(
-    `INSERT OR IGNORE INTO role_gates (guild_id, role_id) VALUES (?, ?)`,
+    "INSERT OR IGNORE INTO role_gates (guild_id, role_id) VALUES (?, ?)",
   ).run(guildId, roleId);
 }
 
 export function removeFunRole(guildId: string, roleId: string): void {
   db.prepare(
-    `DELETE FROM role_gates WHERE guild_id = ? AND role_id = ?`,
+    "DELETE FROM role_gates WHERE guild_id = ? AND role_id = ?",
   ).run(guildId, roleId);
 }
 
-// --- Scores / leaderboard ---
+// -------- Scores / log / leaderboard --------
 
 export function getScore(guildId: string, userId: string): number {
   const row = db
@@ -73,7 +88,11 @@ export function getScore(guildId: string, userId: string): number {
   return row?.score ?? 0;
 }
 
-export function setScore(guildId: string, userId: string, score: number): void {
+export function setScore(
+  guildId: string,
+  userId: string,
+  score: number,
+): void {
   db.prepare(
     `
     INSERT INTO social_scores (guild_id, user_id, score, updated_at)
@@ -137,4 +156,151 @@ export function getLeaderboard(
     )
     .all(guildId, limit) as LeaderboardRow[];
   return rows;
+}
+
+// -------- GIF pools --------
+
+export type GifKind = "positive" | "negative";
+
+export interface GifRow {
+  id: number;
+  guildId: string;
+  kind: GifKind;
+  url: string;
+}
+
+export function addGif(
+  guildId: string,
+  kind: GifKind,
+  url: string,
+): number {
+  const info = db
+    .prepare(
+      `
+      INSERT INTO social_gifs (guild_id, kind, url)
+      VALUES (?, ?, ?)
+    `,
+    )
+    .run(guildId, kind, url);
+  return Number(info.lastInsertRowid);
+}
+
+export function removeGif(guildId: string, id: number): boolean {
+  const info = db
+    .prepare(
+      "DELETE FROM social_gifs WHERE guild_id = ? AND id = ?",
+    )
+    .run(guildId, id);
+  return info.changes > 0;
+}
+
+export function listGifs(
+  guildId: string,
+  kind?: GifKind,
+): GifRow[] {
+  let rows: { id: number; guild_id: string; kind: string; url: string }[];
+  if (kind) {
+    rows = db
+      .prepare(
+        "SELECT id, guild_id, kind, url FROM social_gifs WHERE guild_id = ? AND kind = ? ORDER BY id ASC",
+      )
+      .all(guildId, kind) as any;
+  } else {
+    rows = db
+      .prepare(
+        "SELECT id, guild_id, kind, url FROM social_gifs WHERE guild_id = ? ORDER BY id ASC",
+      )
+      .all(guildId) as any;
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    guildId: r.guild_id,
+    kind: r.kind as GifKind,
+    url: r.url,
+  }));
+}
+
+export function getRandomGif(
+  guildId: string,
+  kind: GifKind,
+): string | null {
+  const row = db
+    .prepare(
+      `
+      SELECT url
+      FROM social_gifs
+      WHERE guild_id = ? AND kind = ?
+      ORDER BY RANDOM()
+      LIMIT 1
+    `,
+    )
+    .get(guildId, kind) as { url: string } | undefined;
+  return row?.url ?? null;
+}
+
+// -------- Triggers --------
+
+export interface TriggerRow {
+  id: number;
+  guildId: string;
+  phrase: string;
+  delta: number;
+  caseSensitive: boolean;
+}
+
+export function addTrigger(
+  guildId: string,
+  phrase: string,
+  delta: number,
+  caseSensitive: boolean,
+): number {
+  const info = db
+    .prepare(
+      `
+      INSERT INTO social_triggers (guild_id, phrase, delta, case_sensitive)
+      VALUES (?, ?, ?, ?)
+    `,
+    )
+    .run(guildId, phrase, delta, caseSensitive ? 1 : 0);
+  return Number(info.lastInsertRowid);
+}
+
+export function removeTrigger(
+  guildId: string,
+  id: number,
+): boolean {
+  const info = db
+    .prepare(
+      "DELETE FROM social_triggers WHERE guild_id = ? AND id = ?",
+    )
+    .run(guildId, id);
+  return info.changes > 0;
+}
+
+export function getTriggers(guildId: string): TriggerRow[] {
+  const rows = db
+    .prepare(
+      `
+      SELECT id, guild_id, phrase, delta, case_sensitive
+      FROM social_triggers
+      WHERE guild_id = ?
+      ORDER BY id ASC
+    `,
+    )
+    .all(guildId) as {
+    id: number;
+    guild_id: string;
+    phrase: string;
+    delta: number;
+    case_sensitive: number;
+  }[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    guildId: r.guild_id,
+    phrase: r.phrase,
+    delta: r.delta,
+    caseSensitive: !!r.case_sensitive,
+  }));
 }
