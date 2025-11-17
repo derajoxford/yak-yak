@@ -361,17 +361,36 @@ export async function execute(
 
       const lines = rows.map((row, idx) => {
         const rank = idx + 1;
-        return `**#${rank}** <@${row.userId}> – **${row.score}**`;
+        let badge: string;
+        if (direction === "top") {
+          if (rank === 1) badge = "🥇";
+          else if (rank === 2) badge = "🥈";
+          else if (rank === 3) badge = "🥉";
+          else badge = `#${rank}`;
+        } else {
+          if (rank === 1) badge = "💀";
+          else if (rank === 2) badge = "☢️";
+          else if (rank === 3) badge = "🚨";
+          else badge = `#${rank}`;
+        }
+
+        const label = scoreLabel(row.score);
+        return `${badge} <@${row.userId}> — **${row.score}** · *${label}*`;
       });
 
       const title =
         direction === "bottom"
-          ? `Social Credit Leaderboard – Bottom ${rows.length}`
-          : `Social Credit Leaderboard – Top ${rows.length}`;
+          ? `📉 Social Credit Leaderboard — Bottom ${rows.length}`
+          : `📊 Social Credit Leaderboard — Top ${rows.length}`;
+
+      const color =
+        direction === "bottom" ? 0xff5555 : 0x55ff99; // red-ish for bottom, green-ish for top
 
       const embed = new EmbedBuilder()
         .setTitle(title)
-        .setDescription(lines.join("\n"));
+        .setDescription(lines.join("\n"))
+        .setColor(color)
+        .setFooter({ text: "Social Credit Bureau" });
 
       await interaction.reply({ embeds: [embed] });
       return;
@@ -449,7 +468,7 @@ export async function execute(
       }
 
       await interaction.reply({
-        content: `✅ Removed GIF #${id} from the pool.`,
+        content: `✅ Removed GIF #${id}.`,
         ephemeral: true,
       });
       return;
