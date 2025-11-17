@@ -24,6 +24,28 @@ function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+function isLikelyImageUrl(url: string): boolean {
+  if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
+  const lowered = url.toLowerCase();
+  if (
+    lowered.endsWith(".gif") ||
+    lowered.endsWith(".png") ||
+    lowered.endsWith(".jpg") ||
+    lowered.endsWith(".jpeg") ||
+    lowered.endsWith(".webp")
+  ) {
+    return true;
+  }
+  if (
+    lowered.includes("media.giphy.com") ||
+    lowered.includes("media.tenor.com") ||
+    lowered.includes("cdn.discordapp.com")
+  ) {
+    return true;
+  }
+  return false;
+}
+
 // Fallback gifs if the pool is empty or broken
 const FALLBACK_POSITIVE_GIFS = [
   "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
@@ -43,7 +65,7 @@ function pickSocialGif(
 ): string | null {
   const kind: GifKind = positive ? "positive" : "negative";
   const fromPool = getRandomGif(guildId, kind);
-  if (fromPool) return fromPool;
+  if (fromPool && isLikelyImageUrl(fromPool)) return fromPool;
 
   const pool = positive ? FALLBACK_POSITIVE_GIFS : FALLBACK_NEGATIVE_GIFS;
   return pool.length ? pick(pool) : null;
@@ -352,174 +374,3 @@ export async function execute(
       await interaction.reply({ embeds: [embed] });
       return;
     }
-
-    if (sub === "leaderboard") {
-      const direction =
-        (interaction.options.getString("direction") as
-          | "top"
-          | "bottom"
-          | null) ?? "top";
-      const limit = interaction.options.getInteger("limit") ?? 10;
-
-      const rows = getLeaderboard(guildId, direction, limit);
-      if (rows.length === 0) {
-        await interaction.reply({
-          content: "No Social Credit data yet.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const lines = rows.map((row, idx) => {
-        const rank = idx + 1;
-        return `**#${rank}** <@${row.userId}> – **${row.score}**`;
-      });
-
-      const title =
-        direction === "bottom"
-          ? `Social Credit Leaderboard – Bottom ${rows.length}`
-          : `Social Credit Leaderboard – Top ${rows.length}`;
-
-      const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setDescription(lines.join("\n"));
-
-      await interaction.reply({ embeds: [embed] });
-      return;
-    }
-  }
-
-  // ----- GIF subcommands -----
-  if (group === "gif") {
-    if (!isFunOperator(interaction)) {
-      await interaction.reply({
-        content:
-          "You do not have sufficient authority to modify GIF pools.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "add") {
-      const kind = interaction.options.getString("kind", true) as GifKind;
-      const url = interaction.options.getString("url", true);
-
-      const id = addGif(guildId, kind, url);
-      await interaction.reply({
-        content: `✅ Added GIF #${id} to **${kind}** pool.`,
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "list") {
-      const kindOpt = interaction.options.getString("kind") as
-        | GifKind
-        | null;
-      const rows = listGifs(guildId, kindOpt ?? undefined);
-
-      if (rows.length === 0) {
-        await interaction.reply({
-          content: "No GIFs configured yet.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const lines = rows.map(
-        (r) => `#${r.id} [${r.kind}] ${r.url}`,
-      );
-
-      await interaction.reply({
-        content: "GIF pool:\n" + lines.join("\n"),
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "remove") {
-      const id = interaction.options.getInteger("id", true);
-      const ok = removeGif(guildId, id);
-      if (!ok) {
-        await interaction.reply({
-          content: `No GIF found with ID #${id}.`,
-          ephemeral: true,
-        });
-        return;
-      }
-
-      await interaction.reply({
-        content: `✅ Removed GIF #${id} from the pool.`,
-        ephemeral: true,
-      });
-      return;
-    }
-  }
-
-  // ----- Trigger subcommands -----
-  if (group === "triggers") {
-    if (!isFunOperator(interaction)) {
-      await interaction.reply({
-        content:
-          "You do not have sufficient authority to manage triggers.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "add") {
-      const phrase = interaction.options.getString("phrase", true);
-      const delta = interaction.options.getInteger("delta", true);
-      const caseSensitive =
-        interaction.options.getBoolean("case_sensitive") ?? false;
-
-      const id = addTrigger(guildId, phrase, delta, caseSensitive);
-      await interaction.reply({
-        content: `✅ Added trigger #${id}: "${phrase}" → ${delta > 0 ? "+" : ""}${delta} (caseSensitive=${caseSensitive})`,
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "list") {
-      const rows = getTriggers(guildId);
-      if (rows.length === 0) {
-        await interaction.reply({
-          content: "No triggers configured yet.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const lines = rows.map((r) => {
-        const cs = r.caseSensitive ? "CS" : "CI";
-        const deltaStr = r.delta > 0 ? `+${r.delta}` : `${r.delta}`;
-        return `#${r.id} "${r.phrase}" → ${deltaStr} (${cs})`;
-      });
-
-      await interaction.reply({
-        content: "Triggers:\n" + lines.join("\n"),
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "remove") {
-      const id = interaction.options.getInteger("id", true);
-      const ok = removeTrigger(guildId, id);
-      if (!ok) {
-        await interaction.reply({
-          content: `No trigger found with ID #${id}.`,
-          ephemeral: true,
-        });
-        return;
-      }
-
-      await interaction.reply({
-        content: `✅ Removed trigger #${id}.`,
-        ephemeral: true,
-      });
-      return;
-    }
-  }
-}
