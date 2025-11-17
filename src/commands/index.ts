@@ -9,6 +9,7 @@ import {
 import * as ping from "./ping.js";
 import * as social from "./social.js";
 import * as funGate from "./fun_gate.js";
+import * as credit from "./credit.js";
 
 export interface Command {
   data:
@@ -19,11 +20,10 @@ export interface Command {
 }
 
 // Single source of truth for all commands
-const commands: Command[] = [ping, social, funGate];
+const commands: Command[] = [ping, social, funGate, credit];
 
 export const commandMap = new Map<string, Command>(
   commands.map((cmd) => [cmd.data.name, cmd]),
 );
 
-// Default export for the registry script
 export default commands;
