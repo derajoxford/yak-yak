@@ -1,5 +1,15 @@
-import { Client, Events, GatewayIntentBits } from "discord.js";
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  EmbedBuilder,
+} from "discord.js";
 import { commandMap } from "./commands/index.js";
+import {
+  getTriggers,
+  adjustScore,
+  getRandomGif,
+} from "./db/socialDb.js";
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.SOCIAL_GUILD_ID;
@@ -9,25 +19,27 @@ if (!token) {
 }
 
 if (!guildId) {
-  console.warn("[warn] SOCIAL_GUILD_ID is not set; bot will run but won’t enforce guild-only scope.");
+  console.warn(
+    "[warn] SOCIAL_GUILD_ID is not set; Yak Yak will respond in all guilds it’s in.",
+  );
 }
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    // We will later add message intents for auto social credit triggers.
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ],
 });
 
 client.once(Events.ClientReady, (c) => {
-  console.log(`Social Credit bot ready as ${c.user.tag}`);
+  console.log(`Yak Yak ready as ${c.user.tag}`);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (guildId && interaction.guildId && interaction.guildId !== guildId) {
-    // Ignore commands from other guilds
     return;
   }
 
@@ -51,6 +63,63 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } else {
       await interaction.reply(replyPayload).catch(() => {});
     }
+  }
+});
+
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    if (!message.guildId) return;
+    if (guildId && message.guildId !== guildId) return;
+    if (message.author.bot) return;
+
+    const content = message.content;
+    if (!content) return;
+
+    const triggers = getTriggers(message.guildId);
+    if (triggers.length === 0) return;
+
+    const lower = content.toLowerCase();
+
+    for (const trig of triggers) {
+      const haystack = trig.caseSensitive ? content : lower;
+      const needle = trig.caseSensitive
+        ? trig.phrase
+        : trig.phrase.toLowerCase();
+
+      if (!haystack.includes(needle)) continue;
+      if (trig.delta === 0) continue;
+
+      const { previous, current } = adjustScore(
+        message.guildId,
+        null,
+        message.author.id,
+        trig.delta,
+        trig.phrase,
+      );
+
+      const positive = trig.delta > 0;
+      const kind = positive ? "positive" : "negative";
+      const gif = getRandomGif(message.guildId, kind) ?? undefined;
+
+      const embed = new EmbedBuilder()
+        .setTitle(
+          positive ? "Social Credit Awarded" : "Social Credit Deducted",
+        )
+        .setDescription(
+          `${message.author} triggered **"${trig.phrase}"**.\nDelta: **${
+            trig.delta > 0 ? `+${trig.delta}` : trig.delta
+          }**\nPrevious: **${previous}**\nCurrent: **${current}**`,
+        )
+        .setFooter({ text: "Automated Social Credit trigger" });
+
+      if (gif) {
+        embed.setImage(gif);
+      }
+
+      await message.channel.send({ embeds: [embed] });
+    }
+  } catch (err) {
+    console.error("Error handling message trigger:", err);
   }
 });
 
