@@ -25,10 +25,10 @@ if (!guildId) {
 }
 
 function pickTriggerGif(
-  guildId: string,
+  guild: string,
   positive: boolean,
 ): string | null {
-  return getRandomGif(guildId, positive ? "positive" : "negative");
+  return getRandomGif(guild, positive ? "positive" : "negative");
 }
 
 const client = new Client({
@@ -119,10 +119,10 @@ client.on(Events.MessageCreate, async (message) => {
         .setFooter({ text: "Automated Social Credit trigger" });
 
       if (gif) {
-        await message.channel.send({ embeds: [embed], content: gif });
-      } else {
-        await message.channel.send({ embeds: [embed] });
+        embed.setImage(gif);
       }
+
+      await message.channel.send({ embeds: [embed] });
     }
   } catch (err) {
     console.error("Error handling message trigger:", err);
