@@ -154,12 +154,11 @@ export async function execute(
     return;
   }
 
-  // We already know it's text-based; dodge TS whining.
   const textChannel: any = channel;
 
   const embed = new EmbedBuilder()
     .setTitle(label)
-    .setDescription(`${target} – your Social Credit is under review.`)
+    .setDescription(`${target} – Your Social Credit is under review.`)
     .setImage(gifUrl)
     .setFooter({ text: `Requested by ${interaction.user.tag}` });
 
