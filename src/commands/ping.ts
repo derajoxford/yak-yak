@@ -4,7 +4,6 @@ import {
   EmbedBuilder,
   PermissionsBitField,
   type GuildMember,
-  type TextBasedChannel,
 } from "discord.js";
 
 const DEFAULT_SALUTE_GIF =
@@ -141,7 +140,8 @@ export async function execute(
     return;
   }
 
-  const textChannel = channel as TextBasedChannel;
+  // We already confirmed it's text-based; TS can chill.
+  const textChannel: any = channel;
 
   const embed = new EmbedBuilder()
     .setTitle(label)
