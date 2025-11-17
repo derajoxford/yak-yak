@@ -1,31 +1,28 @@
-import type {
-  ChatInputCommandInteraction,
+// src/commands/index.ts
+import {
   SlashCommandBuilder,
-  SlashCommandOptionsOnlyBuilder,
   SlashCommandSubcommandsOnlyBuilder,
+  SlashCommandOptionsOnlyBuilder,
+  ChatInputCommandInteraction,
 } from "discord.js";
+
 import * as ping from "./ping.js";
 import * as social from "./social.js";
-import * as fun_gate from "./fun_gate.js";
-
-export type SlashCommandType =
-  | SlashCommandBuilder
-  | SlashCommandOptionsOnlyBuilder
-  | SlashCommandSubcommandsOnlyBuilder;
+import * as funGate from "./fun_gate.js";
 
 export interface Command {
-  data: SlashCommandType;
-  execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
+  data:
+    | SlashCommandBuilder
+    | SlashCommandSubcommandsOnlyBuilder
+    | SlashCommandOptionsOnlyBuilder;
+  execute(interaction: ChatInputCommandInteraction): Promise<void>;
 }
 
-const commandList: Command[] = [
-  { data: ping.data, execute: ping.execute },
-  { data: social.data, execute: social.execute },
-  { data: fun_gate.data, execute: fun_gate.execute },
-];
-
-export const commands = commandList;
+// IMPORTANT: this array is the single source of truth for commands
+const commands: Command[] = [ping, social, funGate];
 
 export const commandMap = new Map<string, Command>(
-  commandList.map((cmd) => [cmd.data.name, cmd]),
+  commands.map((cmd) => [cmd.data.name, cmd]),
 );
+
+export default commands;
