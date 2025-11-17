@@ -1,7 +1,7 @@
 {
-  "name": "social-credit-bot",
+  "name": "yak-yak",
   "version": "0.1.0",
-  "description": "Discord fun bot: ping salutes + social credit.",
+  "description": "Yakuza Fun bot: pings + Social Credit.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
