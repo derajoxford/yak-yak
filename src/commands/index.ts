@@ -5,6 +5,8 @@ import type {
   SlashCommandSubcommandsOnlyBuilder,
 } from "discord.js";
 import * as ping from "./ping.js";
+import * as social from "./social.js";
+import * as fun_gate from "./fun_gate.js";
 
 export type SlashCommandType =
   | SlashCommandBuilder
@@ -17,10 +19,9 @@ export interface Command {
 }
 
 const commandList: Command[] = [
-  {
-    data: ping.data,
-    execute: ping.execute,
-  },
+  { data: ping.data, execute: ping.execute },
+  { data: social.data, execute: social.execute },
+  { data: fun_gate.data, execute: fun_gate.execute },
 ];
 
 export const commands = commandList;
