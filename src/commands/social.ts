@@ -53,12 +53,56 @@ function isSocialAdmin(
 }
 
 function scoreLabel(score: number): string {
-  if (score >= 50) return "Model Citizen";
-  if (score >= 10) return "Upstanding Member";
-  if (score >= 0) return "Under Review";
-  if (score >= -9) return "Questionable Influence";
-  if (score >= -25) return "Public Menace";
-  return "Existential Threat";
+  // Perfectly neutral
+  if (score === 0) {
+    return "🌀 Unlisted in the Family Ledger";
+  }
+
+  // -------- Positive side: climbing the syndicate --------
+  if (score > 0) {
+    if (score >= 10_000_000) return "⛩ Mythic Dragon of the Clan";
+    if (score >= 5_000_000) return "🌋 World-Breaking Legend";
+    if (score >= 1_000_000) return "👑 Shadow Shogun";
+    if (score >= 500_000) return "🉐 Legendary Oyabun";
+    if (score >= 250_000) return "🐉 Clan Kumicho";
+    if (score >= 100_000) return "🪙 Saiko-komon (Shadow Advisor)";
+    if (score >= 50_000) return "🗡 Wakagashira (Underboss)";
+    if (score >= 25_000) return "🏮 Street Emperor";
+    if (score >= 10_000) return "🔥 Red Lantern Captain";
+    if (score >= 5_000) return "🎴 High-Roller Enforcer";
+    if (score >= 2_500) return "🥋 Kyodai (Big Brother)";
+    if (score >= 1_000) return "💼 Trusted Fixer";
+    if (score >= 500) return "💴 Serious Earner";
+    if (score >= 250) return "📈 Rising Star of the Clan";
+    if (score >= 100) return "📜 Reliable Collector";
+    if (score >= 50) return "🧳 Trusted Bagman";
+    if (score >= 25) return "🪪 Local Operator";
+    if (score >= 10) return "📊 Minor Associate";
+    // 1–9
+    return "🏮 Shopfront Civilian";
+  }
+
+  // -------- Negative side: falling into the gutter --------
+  if (score <= -10_000_000) return "🌑 Final Boss of Bad Decisions";
+  if (score <= -5_000_000) return "☄️ Walking Extinction Event";
+  if (score <= -1_000_000) return "👻 Urban Legend (Do Not Engage)";
+  if (score <= -500_000) return "💀 Federally Monitored Disaster";
+  if (score <= -250_000) return "🚨 Sirens On Sight";
+  if (score <= -100_000) return "🚔 Permanent Police Escort";
+  if (score <= -50_000) return "📛 Clan-Wide Embarrassment";
+  if (score <= -25_000) return "🕳 Reputation Black Hole";
+  if (score <= -10_000) return "⛓ Lifetime Debt Slave";
+  if (score <= -5_000) return "🩸 Catastrophic Liability";
+  if (score <= -2_500) return "⛔ Nuclear-Level Problem";
+  if (score <= -1_000) return "🕵️ Snitch Rumors Everywhere";
+  if (score <= -500) return "📉 Bad Debt Magnet";
+  if (score <= -250) return "⚠️ Clan Liability";
+  if (score <= -100) return "☠️ Existential Threat to the Clan";
+  if (score <= -50) return "💣 Danger to Society";
+  if (score <= -25) return "😬 Loose Cannon";
+  if (score <= -10) return "🚬 Suspicious Drifter";
+  // -1 to -9
+  return "😐 Mildly Suspect";
 }
 
 function pickSocialGif(
@@ -217,7 +261,9 @@ export const data = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("triggers")
-      .setDescription("Manage keyword-based Social Credit triggers. (admin only)")
+      .setDescription(
+        "Manage keyword-based Social Credit triggers. (admin only)",
+      )
       .addSubcommand((sub) =>
         sub
           .setName("add")
@@ -315,7 +361,9 @@ export async function execute(
         .setDescription(
           `${target} has been **${
             positive ? "blessed" : "punished"
-          }**.\n\nDelta: **${delta > 0 ? `+${delta}` : delta}**\nPrevious: **${previous}**\nCurrent: **${current}**`,
+          }**.\n\nDelta: **${
+            delta > 0 ? `+${delta}` : delta
+          }**\nPrevious: **${previous}**\nCurrent: **${current}**`,
         )
         .setFooter({
           text: reason
