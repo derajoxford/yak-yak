@@ -156,19 +156,22 @@ export const data = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("gif")
-      .setDescription("Manage Social Credit GIF pools. (admin only)")
+      .setDescription(
+        "Manage Social Credit GIF pools (positive/negative/sabotage). (admin only)",
+      )
       .addSubcommand((sub) =>
         sub
           .setName("add")
-          .setDescription("Add a GIF to the positive/negative pool.")
+          .setDescription("Add a GIF to a pool.")
           .addStringOption((opt) =>
             opt
               .setName("kind")
-              .setDescription("Positive or negative")
+              .setDescription("Which pool?")
               .setRequired(true)
               .addChoices(
                 { name: "Positive", value: "positive" },
                 { name: "Negative", value: "negative" },
+                { name: "Sabotage", value: "sabotage" },
               ),
           )
           .addStringOption((opt) =>
@@ -185,7 +188,18 @@ export const data = new SlashCommandBuilder()
       .addSubcommand((sub) =>
         sub
           .setName("list")
-          .setDescription("List GIFs in the pool."),
+          .setDescription("List GIFs in the pool.")
+          .addStringOption((opt) =>
+            opt
+              .setName("kind")
+              .setDescription("Filter by pool")
+              .addChoices(
+                { name: "All", value: "all" },
+                { name: "Positive", value: "positive" },
+                { name: "Negative", value: "negative" },
+                { name: "Sabotage", value: "sabotage" },
+              ),
+          ),
       )
       .addSubcommand((sub) =>
         sub
@@ -414,10 +428,13 @@ export async function execute(
     }
 
     if (sub === "list") {
-      const kindOpt = interaction.options.getString("kind") as
-        | GifKind
-        | null;
-      const rows = listGifs(guildId, kindOpt ?? undefined);
+      const kindRaw = interaction.options.getString("kind");
+      let rows;
+      if (!kindRaw || kindRaw === "all") {
+        rows = listGifs(guildId);
+      } else {
+        rows = listGifs(guildId, kindRaw as GifKind);
+      }
 
       if (rows.length === 0) {
         await interaction.reply({
