@@ -1,3 +1,4 @@
+// src/db/socialDb.ts
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS social_log (
 CREATE TABLE IF NOT EXISTS social_gifs (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   guild_id   TEXT NOT NULL,
-  kind       TEXT NOT NULL CHECK (kind IN ('positive', 'negative')),
+  kind       TEXT NOT NULL CHECK (kind IN ('positive', 'negative', 'sabotage')),
   url        TEXT NOT NULL
 );
 
@@ -51,6 +52,33 @@ CREATE TABLE IF NOT EXISTS social_triggers (
   case_sensitive INTEGER NOT NULL DEFAULT 0
 );
 `);
+
+// --- One-time migration: extend old social_gifs.kind CHECK to include 'sabotage' ---
+const gifTableSqlRow = db
+  .prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'social_gifs'",
+  )
+  .get() as { sql: string } | undefined;
+
+if (gifTableSqlRow?.sql && !gifTableSqlRow.sql.includes("sabotage")) {
+  // Old table only allowed 'positive' and 'negative'. Rebuild it to also allow 'sabotage'.
+  db.exec(`
+    PRAGMA foreign_keys=OFF;
+    BEGIN TRANSACTION;
+    CREATE TABLE IF NOT EXISTS social_gifs_new (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id   TEXT NOT NULL,
+      kind       TEXT NOT NULL CHECK (kind IN ('positive', 'negative', 'sabotage')),
+      url        TEXT NOT NULL
+    );
+    INSERT INTO social_gifs_new (id, guild_id, kind, url)
+    SELECT id, guild_id, kind, url FROM social_gifs;
+    DROP TABLE social_gifs;
+    ALTER TABLE social_gifs_new RENAME TO social_gifs;
+    COMMIT;
+    PRAGMA foreign_keys=ON;
+  `);
+}
 
 function now(): number {
   return Math.floor(Date.now() / 1000);
@@ -160,7 +188,7 @@ export function getLeaderboard(
 
 // -------- GIF pools --------
 
-export type GifKind = "positive" | "negative";
+export type GifKind = "positive" | "negative" | "sabotage";
 
 export interface GifRow {
   id: number;
@@ -198,7 +226,12 @@ export function listGifs(
   guildId: string,
   kind?: GifKind,
 ): GifRow[] {
-  let rows: { id: number; guild_id: string; kind: string; url: string }[];
+  let rows: {
+    id: number;
+    guild_id: string;
+    kind: string;
+    url: string;
+  }[];
   if (kind) {
     rows = db
       .prepare(
