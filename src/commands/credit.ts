@@ -178,7 +178,7 @@ export async function execute(
       .setTitle(title)
       .setDescription(lines.join("\n"))
       .setColor(color)
-      .setFooter({ text: "Social Credit Bureau" });
+      .setFooter({ text: "Yakuza Social Credit Bureau" });
 
     await interaction.reply({ embeds: [embed] });
     return;
@@ -199,7 +199,7 @@ export async function execute(
 
     if (target.id === thief.id) {
       await interaction.reply({
-        content: "Nice try. You can't steal from yourself.",
+        content: "Dumbass. You can't steal from yourself.",
         ephemeral: true,
       });
       return;
@@ -208,7 +208,7 @@ export async function execute(
     const victimScore = getScore(guildId, target.id);
     if (victimScore <= 0) {
       await interaction.reply({
-        content: `${target} has no Social Credit worth stealing.`,
+        content: `${target} has no Social Credit worth stealing, such a brokie.`,
         ephemeral: true,
       });
       return;
@@ -219,7 +219,7 @@ export async function execute(
 
     if (maxSteal <= 0) {
       await interaction.reply({
-        content: `${target} has no Social Credit worth stealing.`,
+        content: `${target} has negative social credit, obvisouly a drain on society.`,
         ephemeral: true,
       });
       return;
@@ -251,7 +251,7 @@ export async function execute(
           `**${thief.username}**: ${thiefResult.previous} → ${thiefResult.current}`,
       )
       .setColor(0xffc857)
-      .setFooter({ text: "Crime always pays… until it doesn’t." });
+      .setFooter({ text: "Crime always pays… In Yakuza." });
 
     await interaction.reply({ embeds: [embed] });
     return;
@@ -264,7 +264,16 @@ export async function execute(
 
     if (target.bot) {
       await interaction.reply({
-        content: "You can't sabotage a bot. They have no soul.",
+        content: "You can only sabatoge the Resident Retard No other bots accept sabatoge.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (target.id === attacker.id) {
+      await interaction.reply({
+        content:
+          "Are you mildly retarded? Avoid self sabotage....genius. Even James Bond didn’t do that. Pick a different target dipshit.",
         ephemeral: true,
       });
       return;
@@ -284,7 +293,7 @@ export async function execute(
         mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
       await interaction.reply({
-        content: `You recently attempted sabotage. Cooldown remaining: **${friendly}**.`,
+        content: `You need to chill the fuck out on the Sabotages genius. Cooldown remaining: **${friendly}**.`,
         ephemeral: true,
       });
       return;
@@ -357,7 +366,7 @@ export async function execute(
       desc +=
         `\n**Backfire!** ${attacker} also got wrecked.\n` +
         `Lost: **${Math.abs(backfireAmount)}** Social Credit\n` +
-        `**${attacker.username}:** ${attackerResult.previous} → ${attackerResult.current} (${diffStr})`;
+        `**${attacker.username}**: ${attackerResult.previous} → ${attackerResult.current} (${diffStr})`;
     }
 
     const embed = new EmbedBuilder()
