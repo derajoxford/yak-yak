@@ -20,6 +20,12 @@ import {
   type GifKind,
 } from "../db/socialDb.js";
 
+// ---- Config ----
+
+// Max change per keyword trigger. Slash option enforces this.
+const TRIGGER_DELTA_MIN = -250000;
+const TRIGGER_DELTA_MAX = 250000;
+
 // ---- Helpers ----
 
 // Admin-only gate for /social:
@@ -211,10 +217,12 @@ export const data = new SlashCommandBuilder()
           .addIntegerOption((opt) =>
             opt
               .setName("delta")
-              .setDescription("Social Credit change (positive or negative).")
+              .setDescription(
+                `Social Credit change (between ${TRIGGER_DELTA_MIN} and ${TRIGGER_DELTA_MAX}).`,
+              )
               .setRequired(true)
-              .setMinValue(-100)
-              .setMaxValue(100),
+              .setMinValue(TRIGGER_DELTA_MIN)
+              .setMaxValue(TRIGGER_DELTA_MAX),
           )
           .addBooleanOption((opt) =>
             opt
@@ -459,7 +467,9 @@ export async function execute(
 
       const id = addTrigger(guildId, phrase, delta, caseSensitive);
       await interaction.reply({
-        content: `✅ Added trigger #${id}: "${phrase}" → ${delta > 0 ? "+" : ""}${delta} (caseSensitive=${caseSensitive})`,
+        content: `✅ Added trigger #${id}: "${phrase}" → ${
+          delta > 0 ? "+" : ""
+        }${delta} (caseSensitive=${caseSensitive})`,
         ephemeral: true,
       });
       return;
