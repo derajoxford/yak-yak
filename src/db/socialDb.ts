@@ -221,6 +221,81 @@ export function getTodayActivityTotal(
   return row?.total ?? 0;
 }
 
+// Recent log entries for a user (for rapsheet)
+export interface LogEntry {
+  id: number;
+  actorId: string | null;
+  targetId: string;
+  delta: number;
+  reason: string | null;
+  createdAt: number;
+}
+
+export function getRecentLogForUser(
+  guildId: string,
+  userId: string,
+  limit: number,
+): LogEntry[] {
+  const rows = db
+    .prepare(
+      `
+      SELECT
+        id,
+        actor_id    AS actorId,
+        target_id   AS targetId,
+        delta,
+        reason,
+        created_at  AS createdAt
+      FROM social_log
+      WHERE guild_id = ?
+        AND target_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `,
+    )
+    .all(guildId, userId, limit) as LogEntry[];
+
+  return rows;
+}
+
+// Sabotage stats for "most sabotaged" board
+export interface SabotageStatRow {
+  targetId: string;
+  hits: number;
+  netDelta: number;
+  totalLoss: number;
+}
+
+export function getSabotageStatsSince(
+  guildId: string,
+  since: number,
+  limit: number,
+): SabotageStatRow[] {
+  const rows = db
+    .prepare(
+      `
+      SELECT
+        target_id AS targetId,
+        COUNT(*)  AS hits,
+        COALESCE(SUM(delta), 0) AS netDelta,
+        COALESCE(
+          SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END),
+          0
+        ) AS totalLoss
+      FROM social_log
+      WHERE guild_id = ?
+        AND created_at >= ?
+        AND reason LIKE 'Sabotage%'
+      GROUP BY target_id
+      ORDER BY totalLoss DESC, hits DESC
+      LIMIT ?
+    `,
+    )
+    .all(guildId, since, limit) as SabotageStatRow[];
+
+  return rows;
+}
+
 // -------- GIF pools --------
 
 export type GifKind = "positive" | "negative" | "sabotage";
