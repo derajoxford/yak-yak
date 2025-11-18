@@ -4,12 +4,14 @@ import {
   Events,
   GatewayIntentBits,
   EmbedBuilder,
+  type Message,
 } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import {
   getTriggers,
   adjustScore,
   getRandomGif,
+  getTodayActivityTotal,
 } from "./db/socialDb.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -41,11 +43,104 @@ function pickTriggerGif(
   return getRandomGif(guild, positive ? "positive" : "negative");
 }
 
+// ---- Activity & reaction config ----
+
+// Per-user activity bonus cooldown (ms). Default: 10 minutes.
+const ACTIVITY_COOLDOWN_MS: number = Number(
+  process.env.SOCIAL_ACTIVITY_COOLDOWN_MS ?? "600000",
+);
+
+// Max Social Credit per day from activity + reaction bonuses.
+// Default: 250.
+const ACTIVITY_DAILY_CAP: number = Number(
+  process.env.SOCIAL_ACTIVITY_DAILY_CAP ?? "250",
+);
+
+// Per-activity tick reward range.
+const ACTIVITY_MIN_REWARD = 1;
+const ACTIVITY_MAX_REWARD = 5;
+
+// Reaction bonus: minimum distinct reactors to award.
+const REACTION_MIN_DISTINCT: number = Number(
+  process.env.SOCIAL_REACTION_MIN_DISTINCT ?? "3",
+);
+
+// Reaction bonus amount range.
+const REACTION_BONUS_MIN: number = Number(
+  process.env.SOCIAL_REACTION_BONUS_MIN ?? "5",
+);
+const REACTION_BONUS_MAX: number = Number(
+  process.env.SOCIAL_REACTION_BONUS_MAX ?? "20",
+);
+
+// Maps to track activity & reaction state in-memory
+// key: `${guildId}:${userId}` -> last activity award timestamp (ms)
+const lastActivityAward = new Map<string, number>();
+
+// key: `${guildId}:${channelId}:${messageId}` -> { users, rewarded }
+const reactionTracker = new Map<
+  string,
+  { users: Set<string>; rewarded: boolean }
+>();
+
+function randomInt(min: number, max: number): number {
+  const low = Math.ceil(min);
+  const high = Math.floor(max);
+  return Math.floor(Math.random() * (high - low + 1)) + low;
+}
+
+// Try to award an "Activity Bonus" for normal chat participation.
+// This is silent: no embeds, just a log entry + score bump.
+function maybeAwardActivity(message: Message): void {
+  if (!message.guildId) return;
+  const gId = message.guildId;
+  const userId = message.author.id;
+
+  const content = message.content ?? "";
+  const trimmed = content.trim();
+
+  // Ignore messages with no content and no attachments
+  if (!trimmed && message.attachments.size === 0) return;
+
+  // Ignore obvious low-effort spam unless there's an attachment
+  if (trimmed.length < 15 && message.attachments.size === 0) return;
+
+  // Ignore commands (slash / prefix style and basic "!" commands)
+  if (trimmed.startsWith("/") || trimmed.startsWith("!")) return;
+
+  const key = `${gId}:${userId}`;
+  const now = Date.now();
+  const last = lastActivityAward.get(key) ?? 0;
+
+  // Per-user cooldown
+  if (now - last < ACTIVITY_COOLDOWN_MS) return;
+
+  // Enforce daily cap from activity-related reasons
+  const todayTotal = getTodayActivityTotal(gId, userId);
+  if (todayTotal >= ACTIVITY_DAILY_CAP) return;
+
+  const remaining = ACTIVITY_DAILY_CAP - todayTotal;
+  const maxReward = Math.min(ACTIVITY_MAX_REWARD, remaining);
+
+  if (maxReward < ACTIVITY_MIN_REWARD) return;
+
+  const amount = randomInt(ACTIVITY_MIN_REWARD, maxReward);
+  adjustScore(
+    gId,
+    null,
+    userId,
+    amount,
+    "Activity Bonus (chat participation)",
+  );
+  lastActivityAward.set(key, now);
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions,
   ],
 });
 
@@ -55,6 +150,11 @@ client.once(Events.ClientReady, (c) => {
     `[config] trigger cooldown: ${triggerCooldownMs}ms (~${
       (triggerCooldownMs / 1000).toFixed(1)
     }s)`,
+  );
+  console.log(
+    `[config] activity cooldown: ${ACTIVITY_COOLDOWN_MS}ms (~${
+      (ACTIVITY_COOLDOWN_MS / 1000 / 60).toFixed(1)
+    }m), daily cap: ${ACTIVITY_DAILY_CAP}`,
   );
 });
 
@@ -94,9 +194,16 @@ client.on(Events.MessageCreate, async (message) => {
     if (guildId && message.guildId !== guildId) return;
     if (message.author.bot) return;
 
-    const content = message.content;
-    if (!content) return;
+    // ---- Activity bonus (silent, small, capped) ----
+    maybeAwardActivity(message);
 
+    const content = message.content;
+    if (!content) {
+      // No text content: skip triggers, but activity may already have been applied
+      return;
+    }
+
+    // ---- Keyword-based triggers (/social triggers) ----
     const triggers = getTriggers(message.guildId);
     if (triggers.length === 0) return;
 
@@ -155,7 +262,68 @@ client.on(Events.MessageCreate, async (message) => {
       await message.channel.send({ embeds: [embed] });
     }
   } catch (err) {
-    console.error("Error handling message trigger:", err);
+    console.error("Error handling message trigger/activity:", err);
+  }
+});
+
+// Distinct-user reaction bonus: when a message reaches N distinct reactors,
+// award the author a one-time bonus (within the daily activity cap).
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  try {
+    if (user.bot) return;
+
+    const message = reaction.message;
+
+    if (!message.guildId) return;
+    if (guildId && message.guildId !== guildId) return;
+
+    // We only care about messages with an identifiable author in guilds
+    const author = message.author;
+    if (!author || author.bot) return;
+
+    const key = `${message.guildId}:${message.channelId}:${message.id}`;
+    let state = reactionTracker.get(key);
+    if (!state) {
+      state = { users: new Set<string>(), rewarded: false };
+      reactionTracker.set(key, state);
+    }
+
+    if (state.rewarded) return;
+
+    state.users.add(user.id);
+
+    if (state.users.size < REACTION_MIN_DISTINCT) {
+      // not enough unique reactors yet
+      return;
+    }
+
+    // Threshold hit; mark as rewarded so we only do this once
+    state.rewarded = true;
+    reactionTracker.set(key, state);
+
+    // Enforce daily cap for the author
+    const authorId = author.id;
+    const todayTotal = getTodayActivityTotal(message.guildId, authorId);
+    if (todayTotal >= ACTIVITY_DAILY_CAP) return;
+
+    const remaining = ACTIVITY_DAILY_CAP - todayTotal;
+    const maxBonus = Math.min(REACTION_BONUS_MAX, remaining);
+    if (maxBonus < REACTION_BONUS_MIN) return;
+
+    const amount = randomInt(REACTION_BONUS_MIN, maxBonus);
+
+    // Actor is the last reactor who pushed it over the threshold
+    adjustScore(
+      message.guildId,
+      user.id,
+      authorId,
+      amount,
+      "Reaction Bonus (message popped off)",
+    );
+
+    // Silent; shows up in /credit show + future /credit rapsheet
+  } catch (err) {
+    console.error("Error handling reaction bonus:", err);
   }
 });
 
