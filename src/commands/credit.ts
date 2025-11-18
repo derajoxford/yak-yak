@@ -8,6 +8,7 @@ import {
   getScore,
   getLeaderboard,
   adjustScore,
+  getRandomGif,
 } from "../db/socialDb.js";
 
 function scoreLabel(score: number): string {
@@ -24,6 +25,17 @@ function randomInt(min: number, max: number): number {
   const high = Math.floor(max);
   return Math.floor(Math.random() * (high - low + 1)) + low;
 }
+
+// ---- Sabotage config ----
+
+// Per-user sabotage cooldown (ms). Default 5 minutes.
+// You *can* override with CREDIT_SABOTAGE_COOLDOWN_MS in .env.local if you want.
+const SABOTAGE_COOLDOWN_MS: number = Number(
+  process.env.CREDIT_SABOTAGE_COOLDOWN_MS ?? "300000",
+);
+
+// key: `${guildId}:${userId}` -> last sabotage timestamp
+const sabotageCooldown = new Map<string, number>();
 
 export const data = new SlashCommandBuilder()
   .setName("credit")
@@ -69,6 +81,19 @@ export const data = new SlashCommandBuilder()
         opt
           .setName("target")
           .setDescription("Who are you robbing?")
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("sabotage")
+      .setDescription(
+        "Sabotage someone’s Social Credit (±1–18% swing, with a chance to backfire 1–8% on you).",
+      )
+      .addUserOption((opt) =>
+        opt
+          .setName("target")
+          .setDescription("Who are you trying to sabotage?")
           .setRequired(true),
       ),
   );
@@ -202,7 +227,6 @@ export async function execute(
 
     const amount = randomInt(1, maxSteal);
 
-    // First, take from victim
     const victimResult = adjustScore(
       guildId,
       thief.id,
@@ -211,7 +235,6 @@ export async function execute(
       `Stolen by ${thief.tag}`,
     );
 
-    // Then, give to thief
     const thiefResult = adjustScore(
       guildId,
       thief.id,
@@ -229,6 +252,126 @@ export async function execute(
       )
       .setColor(0xffc857)
       .setFooter({ text: "Crime always pays… until it doesn’t." });
+
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+
+  // ----- /credit sabotage -----
+  if (sub === "sabotage") {
+    const attacker = interaction.user;
+    const target = interaction.options.getUser("target", true);
+
+    if (target.bot) {
+      await interaction.reply({
+        content: "You can't sabotage a bot. They have no soul.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const key = `${guildId}:${attacker.id}`;
+    const now = Date.now();
+    const last = sabotageCooldown.get(key) ?? 0;
+    const elapsed = now - last;
+
+    if (elapsed < SABOTAGE_COOLDOWN_MS) {
+      const remainingMs = SABOTAGE_COOLDOWN_MS - elapsed;
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      const friendly =
+        mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+      await interaction.reply({
+        content: `You recently attempted sabotage. Cooldown remaining: **${friendly}**.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const attackerScore = getScore(guildId, attacker.id);
+    const targetScore = getScore(guildId, target.id);
+
+    // ---- Target effect: ±1–18% of |targetScore| (or at least 1) ----
+    const baseTarget = Math.max(Math.abs(targetScore), 1);
+    const pctTarget = randomInt(1, 18);
+    let amountTarget = Math.floor((baseTarget * pctTarget) / 100);
+    if (amountTarget < 1) amountTarget = 1;
+
+    const targetSign = Math.random() < 0.5 ? 1 : -1;
+    const deltaTarget = targetSign * amountTarget;
+
+    const targetResult = adjustScore(
+      guildId,
+      attacker.id,
+      target.id,
+      deltaTarget,
+      `Sabotage by ${attacker.tag}`,
+    );
+
+    // ---- Backfire: 25% chance, -1–8% of |attackerScore| ----
+    let backfire = false;
+    let attackerResult:
+      | { previous: number; current: number }
+      | null = null;
+    let backfireAmount = 0;
+
+    if (Math.random() < 0.25) {
+      const baseAttacker = Math.max(Math.abs(attackerScore), 1);
+      const pctAttacker = randomInt(1, 8);
+      let amountAtt = Math.floor((baseAttacker * pctAttacker) / 100);
+      if (amountAtt < 1) amountAtt = 1;
+
+      backfireAmount = amountAtt;
+      const deltaAtt = -amountAtt;
+
+      attackerResult = adjustScore(
+        guildId,
+        attacker.id,
+        attacker.id,
+        deltaAtt,
+        `Sabotage backfire on ${attacker.tag}`,
+      );
+      backfire = true;
+    }
+
+    sabotageCooldown.set(key, now);
+
+    const deltaStr =
+      deltaTarget > 0
+        ? `+${deltaTarget}`
+        : `${deltaTarget}`;
+
+    let desc =
+      `${attacker} attempted to **sabotage** ${target}.\n\n` +
+      `**Target change:** ${deltaStr}\n` +
+      `**${target.username}:** ${targetResult.previous} → ${targetResult.current}\n`;
+
+    if (backfire && attackerResult) {
+      const diff =
+        attackerResult.current - attackerResult.previous;
+      const diffStr =
+        diff < 0 ? `${diff}` : `+${diff}`;
+
+      desc +=
+        `\n**Backfire!** ${attacker} also got wrecked.\n` +
+        `Lost: **${Math.abs(backfireAmount)}** Social Credit\n` +
+        `**${attacker.username}:** ${attackerResult.previous} → ${attackerResult.current} (${diffStr})`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("🧨 Social Credit Sabotage")
+      .setDescription(desc)
+      .setColor(backfire ? 0xef4444 : 0xf97316)
+      .setFooter({ text: "Chaos is a sacred ritual." });
+
+    const sabotageGif =
+      getRandomGif(guildId, "sabotage") ??
+      getRandomGif(guildId, "negative");
+    if (sabotageGif) {
+      embed.setImage(sabotageGif);
+    }
 
     await interaction.reply({ embeds: [embed] });
     return;
