@@ -1,3 +1,4 @@
+// src/index.ts
 import {
   Client,
   Events,
@@ -24,6 +25,15 @@ if (!guildId) {
   );
 }
 
+// Cooldown for auto Social Credit triggers (keyword-based), in ms.
+// Default: 60000 (60s) if not set in env.
+const triggerCooldownMs: number = Number(
+  process.env.SOCIAL_TRIGGER_COOLDOWN_MS ?? "60000",
+);
+
+// key: `${guildId}:${userId}:${triggerId}` -> last hit timestamp (ms)
+const triggerCooldownMap = new Map<string, number>();
+
 function pickTriggerGif(
   guild: string,
   positive: boolean,
@@ -41,6 +51,11 @@ const client = new Client({
 
 client.once(Events.ClientReady, (c) => {
   console.log(`Yak Yak ready as ${c.user.tag}`);
+  console.log(
+    `[config] trigger cooldown: ${triggerCooldownMs}ms (~${
+      (triggerCooldownMs / 1000).toFixed(1)
+    }s)`,
+  );
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -86,6 +101,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (triggers.length === 0) return;
 
     const lower = content.toLowerCase();
+    const now = Date.now();
 
     for (const trig of triggers) {
       const haystack = trig.caseSensitive ? content : lower;
@@ -96,6 +112,20 @@ client.on(Events.MessageCreate, async (message) => {
       if (!haystack.includes(needle)) continue;
       if (trig.delta === 0) continue;
 
+      // ---- Cooldown check (per guild + user + trigger) ----
+      const key = `${message.guildId}:${message.author.id}:${trig.id}`;
+      const lastHit = triggerCooldownMap.get(key) ?? 0;
+      const elapsed = now - lastHit;
+
+      if (elapsed < triggerCooldownMs) {
+        // Still on cooldown; skip this trigger for this message
+        continue;
+      }
+
+      // Record this hit time
+      triggerCooldownMap.set(key, now);
+
+      // ---- Apply Social Credit change ----
       const { previous, current } = adjustScore(
         message.guildId,
         null,
