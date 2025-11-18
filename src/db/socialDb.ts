@@ -84,6 +84,15 @@ function now(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+// Start of today in UTC, as Unix seconds
+function startOfTodayUtc(): number {
+  const d = new Date();
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth();
+  const day = d.getUTCDate();
+  return Math.floor(Date.UTC(year, month, day) / 1000);
+}
+
 // -------- Role gates --------
 
 export function getFunRoles(guildId: string): string[] {
@@ -184,6 +193,32 @@ export function getLeaderboard(
     )
     .all(guildId, limit) as LeaderboardRow[];
   return rows;
+}
+
+// Return how much Social Credit a user has earned *today* from
+// activity-related sources ("Activity Bonus%" + "Reaction Bonus%").
+export function getTodayActivityTotal(
+  guildId: string,
+  userId: string,
+): number {
+  const start = startOfTodayUtc();
+  const row = db
+    .prepare(
+      `
+      SELECT COALESCE(SUM(delta), 0) AS total
+      FROM social_log
+      WHERE guild_id = ?
+        AND target_id = ?
+        AND created_at >= ?
+        AND (
+          reason LIKE 'Activity Bonus%'
+          OR reason LIKE 'Reaction Bonus%'
+        )
+    `,
+    )
+    .get(guildId, userId, start) as { total: number } | undefined;
+
+  return row?.total ?? 0;
 }
 
 // -------- GIF pools --------
