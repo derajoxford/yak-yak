@@ -11,7 +11,7 @@ import * as social from "./social.js";
 import * as funGate from "./fun_gate.js";
 import * as credit from "./credit.js";
 import * as tithes from "./tithes.js";
-import * as afterdark from './afterdark';
+import * as afterdark from "./afterdark.js";
 
 export interface Command {
   data:
