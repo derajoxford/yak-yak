@@ -6,10 +6,10 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import {
-  getKeyword,
-  setKeyword,
+  addKeywordContent,
   deleteKeyword,
   listKeywords,
+  getRandomKeywordContent,
 } from "../afterdarkStore.js";
 
 export const data = new SlashCommandBuilder()
@@ -20,7 +20,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub
       .setName("set")
-      .setDescription("Create or update an afterdark keyword")
+      .setDescription("Add a response to a keyword's pool")
       .addStringOption((opt) =>
         opt
           .setName("keyword")
@@ -30,14 +30,20 @@ export const data = new SlashCommandBuilder()
       .addStringOption((opt) =>
         opt
           .setName("content")
-          .setDescription("Text or URL to send when this keyword is used")
-          .setRequired(true),
+          .setDescription("Text or URL to send (optional if attaching a file)")
+          .setRequired(false),
+      )
+      .addAttachmentOption((opt) =>
+        opt
+          .setName("file")
+          .setDescription("GIF/image to associate with this keyword")
+          .setRequired(false),
       ),
   )
   .addSubcommand((sub) =>
     sub
       .setName("delete")
-      .setDescription("Delete an afterdark keyword")
+      .setDescription("Delete an afterdark keyword and its pool")
       .addStringOption((opt) =>
         opt
           .setName("keyword")
@@ -105,7 +111,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
   if (sub === "set") {
     const keywordRaw = interaction.options.getString("keyword", true);
-    const content = interaction.options.getString("content", true);
+    const contentOpt = interaction.options.getString("content") ?? undefined;
+    const attachment = interaction.options.getAttachment("file") ?? undefined;
 
     const keyword = keywordRaw.trim().toLowerCase();
     if (!keyword) {
@@ -116,10 +123,30 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       return;
     }
 
-    await setKeyword(guildId, keyword, { content });
+    if (!contentOpt && !attachment) {
+      await interaction.reply({
+        content: "You must provide either content text/URL or attach a file.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    let storedContent: string;
+    if (contentOpt && attachment) {
+      // caption + file URL
+      storedContent = `${contentOpt}\n${attachment.url}`;
+    } else if (attachment) {
+      storedContent = attachment.url;
+    } else {
+      storedContent = contentOpt!;
+    }
+
+    await addKeywordContent(guildId, keyword, storedContent);
 
     await interaction.reply({
-      content: `Saved afterdark keyword \`${keyword}\`. It will reply with:\n${content}`,
+      content:
+        `Added a response to afterdark keyword \`${keyword}\`.\n` +
+        `It will now randomly choose from all entries in that pool when triggered.`,
       ephemeral: true,
     });
     return;
@@ -132,7 +159,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     const ok = await deleteKeyword(guildId, keyword);
     await interaction.reply({
       content: ok
-        ? `Deleted afterdark keyword \`${keyword}\`.`
+        ? `Deleted afterdark keyword \`${keyword}\` and its response pool.`
         : `Keyword \`${keyword}\` was not found.`,
       ephemeral: true,
     });
@@ -182,8 +209,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     const keywordRaw = interaction.options.getString("keyword", true);
     const keyword = keywordRaw.trim().toLowerCase();
 
-    const entry = await getKeyword(guildId, keyword);
-    if (!entry || !entry.content) {
+    const content = await getRandomKeywordContent(guildId, keyword);
+    if (!content) {
       await interaction.reply({
         content: `No content configured for keyword \`${keyword}\`.`,
         ephemeral: true,
@@ -193,8 +220,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
     await interaction.deferReply({ ephemeral: true });
 
-    // TS hack: channel is a union that includes types without .send; cast to any
-    await (channel as any).send({ content: entry.content });
+    await (channel as any).send({ content });
 
     await interaction.editReply({
       content: `Posted afterdark content for keyword \`${keyword}\` in this channel.`,
