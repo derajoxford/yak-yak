@@ -13,6 +13,7 @@ import {
   getRandomGif,
   getTodayActivityTotal,
 } from "./db/socialDb.js";
+import { installAfterdarkKeywordListener } from "./nsfw_keywords.js";
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.SOCIAL_GUILD_ID;
@@ -143,6 +144,9 @@ const client = new Client({
     GatewayIntentBits.GuildMessageReactions,
   ],
 });
+
+// Afterdark keyword responder (NSFW keyword -> programmed response)
+installAfterdarkKeywordListener(client);
 
 client.once(Events.ClientReady, (c) => {
   console.log(`Yak Yak ready as ${c.user.tag}`);
