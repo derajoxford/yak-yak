@@ -11,6 +11,7 @@ import * as social from "./social.js";
 import * as funGate from "./fun_gate.js";
 import * as credit from "./credit.js";
 import * as tithes from "./tithes.js";
+import * as afterdark from './afterdark';
 
 export interface Command {
   data:
@@ -21,7 +22,7 @@ export interface Command {
 }
 
 // Single source of truth for all commands
-const commands: Command[] = [ping, social, funGate, credit, tithes];
+const commands: Command[] = [ping, social, funGate, credit, tithes, afterdark];
 
 export const commandMap = new Map<string, Command>(
   commands.map((cmd) => [cmd.data.name, cmd]),
