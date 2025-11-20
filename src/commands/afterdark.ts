@@ -192,7 +192,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     }
 
     await interaction.deferReply({ ephemeral: true });
-    await channel.send({ content: entry.content });
+
+    // TS hack: channel is a union that includes types without .send; cast to any
+    await (channel as any).send({ content: entry.content });
 
     await interaction.editReply({
       content: `Posted afterdark content for keyword \`${keyword}\` in this channel.`,
