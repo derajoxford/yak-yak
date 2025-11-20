@@ -1,125 +1,208 @@
+// src/commands/afterdark.ts
 import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type AutocompleteInteraction,
-} from 'discord.js';
-
-type TriggerConfig = {
-  content?: string;
-  files?: string[]; // optional: local file paths if you ever want to attach files
-};
-
-// Map of trigger -> payload YOU define.
-// Put your own text/links here. I’m using placeholders.
-const NSFW_TRIGGERS: Record<string, TriggerConfig> = {
-  // Example:
-  // bunny: {
-  //   content: "https://your-cdn-or-image-link-here",
-  // },
-  // fox: {
-  //   content: "Some text or another link",
-  // },
-};
+  PermissionFlagsBits,
+} from "discord.js";
+import {
+  getKeyword,
+  setKeyword,
+  deleteKeyword,
+  listKeywords,
+} from "../afterdarkStore.js";
 
 export const data = new SlashCommandBuilder()
-  .setName('afterdark')
-  .setDescription('Drop pre-configured 18+ content in this NSFW channel')
-  .addStringOption((opt) =>
-    opt
-      .setName('trigger')
-      .setDescription('Pre-set trigger key')
-      .setRequired(true)
-      .setAutocomplete(true),
+  .setName("afterdark")
+  .setDescription("Admin: manage and trigger NSFW keyword responses")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .setDMPermission(false)
+  .addSubcommand((sub) =>
+    sub
+      .setName("set")
+      .setDescription("Create or update an afterdark keyword")
+      .addStringOption((opt) =>
+        opt
+          .setName("keyword")
+          .setDescription("Keyword to configure (e.g. booty)")
+          .setRequired(true),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("content")
+          .setDescription("Text or URL to send when this keyword is used")
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("delete")
+      .setDescription("Delete an afterdark keyword")
+      .addStringOption((opt) =>
+        opt
+          .setName("keyword")
+          .setDescription("Keyword to delete")
+          .setRequired(true)
+          .setAutocomplete(true),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("list")
+      .setDescription("List configured afterdark keywords for this server"),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("send")
+      .setDescription("Send a configured keyword in this NSFW channel")
+      .addStringOption((opt) =>
+        opt
+          .setName("keyword")
+          .setDescription("Keyword to send")
+          .setRequired(true)
+          .setAutocomplete(true),
+      ),
   );
 
-// Optional autocomplete so people can see which triggers exist
 export async function autocomplete(interaction: AutocompleteInteraction) {
-  const focused = interaction.options.getFocused().toLowerCase();
-  const allKeys = Object.keys(NSFW_TRIGGERS);
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.respond([]);
+    return;
+  }
 
-  const filtered = allKeys
-    .filter((key) => key.toLowerCase().startsWith(focused))
+  const sub = interaction.options.getSubcommand();
+  if (sub !== "send" && sub !== "delete") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused().toLowerCase();
+  const keys = await listKeywords(guildId);
+  const filtered = keys
+    .filter((k) => k.toLowerCase().includes(focused))
     .slice(0, 25);
 
   await interaction.respond(
-    filtered.map((key) => ({
-      name: key,
-      value: key,
+    filtered.map((k) => ({
+      name: k,
+      value: k,
     })),
   );
 }
 
 export async function execute(interaction: ChatInputCommandInteraction) {
-  const channel = interaction.channel;
-
-  // 1) Hard stop if not in a guild text channel
-  if (!channel || channel.isDMBased()) {
+  const guildId = interaction.guildId;
+  if (!guildId) {
     await interaction.reply({
-      content: 'This command can only be used in a server text channel.',
+      content: "This command can only be used in a server.",
       ephemeral: true,
     });
     return;
   }
 
-  // Extra safety, though ChatInput should already be text-based
-  if (!channel.isTextBased()) {
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === "set") {
+    const keywordRaw = interaction.options.getString("keyword", true);
+    const content = interaction.options.getString("content", true);
+
+    const keyword = keywordRaw.trim().toLowerCase();
+    if (!keyword) {
+      await interaction.reply({
+        content: "Keyword cannot be empty.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await setKeyword(guildId, keyword, { content });
+
     await interaction.reply({
-      content: 'This command can only be used in a text channel.',
+      content: `Saved afterdark keyword \`${keyword}\`. It will reply with:\n${content}`,
       ephemeral: true,
     });
     return;
   }
 
-  // NSFW gate
-  const guildChannel: any = channel;
-  if (!guildChannel.nsfw) {
+  if (sub === "delete") {
+    const keywordRaw = interaction.options.getString("keyword", true);
+    const keyword = keywordRaw.trim().toLowerCase();
+
+    const ok = await deleteKeyword(guildId, keyword);
     await interaction.reply({
-      content: 'This command can only be used in an **NSFW**-marked channel.',
+      content: ok
+        ? `Deleted afterdark keyword \`${keyword}\`.`
+        : `Keyword \`${keyword}\` was not found.`,
       ephemeral: true,
     });
     return;
   }
 
-  const trigger = interaction.options.getString('trigger', true).toLowerCase();
-  const entry = NSFW_TRIGGERS[trigger];
+  if (sub === "list") {
+    const keys = await listKeywords(guildId);
+    if (keys.length === 0) {
+      await interaction.reply({
+        content: "No afterdark keywords configured for this server yet.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-  if (!entry) {
     await interaction.reply({
-      content: `Unknown trigger \`${trigger}\`. Ask an admin which triggers are set up.`,
+      content: `Configured afterdark keywords for this server:\n${keys
+        .sort()
+        .map((k) => `• \`${k}\``)
+        .join("\n")}`,
       ephemeral: true,
     });
     return;
   }
 
-  // At this point we know:
-  // - We're in an NSFW channel
-  // - The trigger exists
+  if (sub === "send") {
+    const channel = interaction.channel;
 
-  await interaction.deferReply({ ephemeral: true });
+    if (!channel || !channel.isTextBased()) {
+      await interaction.reply({
+        content: "This subcommand must be used in a text channel.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-  const payload: { content?: string; files?: string[] } = {};
+    const guildChannel: any = channel;
+    if (!guildChannel.nsfw) {
+      await interaction.reply({
+        content: "This subcommand can only be used in an **NSFW**-marked channel.",
+        ephemeral: true,
+      });
+      return;
+    }
 
-  if (entry.content) {
-    // This can be a link, plain text, whatever you want.
-    payload.content = entry.content;
-  }
+    const keywordRaw = interaction.options.getString("keyword", true);
+    const keyword = keywordRaw.trim().toLowerCase();
 
-  if (entry.files && Array.isArray(entry.files) && entry.files.length > 0) {
-    // Optional: if you want to attach files for some triggers:
-    // NSFW_TRIGGERS["x"] = { content: "blah", files: ["./path/to/file.png"] }
-    payload.files = entry.files;
-  }
+    const entry = await getKeyword(guildId, keyword);
+    if (!entry || !entry.content) {
+      await interaction.reply({
+        content: `No content configured for keyword \`${keyword}\`.`,
+        ephemeral: true,
+      });
+      return;
+    }
 
-  if (!payload.content && !payload.files) {
+    await interaction.deferReply({ ephemeral: true });
+    await channel.send({ content: entry.content });
+
     await interaction.editReply({
-      content: `Trigger \`${trigger}\` is misconfigured (no content/files).`,
+      content: `Posted afterdark content for keyword \`${keyword}\` in this channel.`,
     });
     return;
   }
 
-  await channel.send(payload);
-
-  await interaction.editReply({
-    content: `Posted content for trigger \`${trigger}\` in this channel.`,
+  // Fallback (should not hit)
+  await interaction.reply({
+    content: "Unknown subcommand.",
+    ephemeral: true,
   });
 }
