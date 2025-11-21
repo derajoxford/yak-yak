@@ -22,6 +22,7 @@ export interface Command {
   execute(interaction: ChatInputCommandInteraction): Promise<void>;
 }
 
+// Single source of truth for all commands
 const commands: Command[] = [
   ping,
   social,
