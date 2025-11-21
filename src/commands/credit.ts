@@ -73,16 +73,30 @@ function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (high - low + 1)) + low;
 }
 
-// ---- Sabotage config ----
+function formatCooldown(msRemaining: number): string {
+  const remainingSec = Math.ceil(msRemaining / 1000);
+  const mins = Math.floor(remainingSec / 60);
+  const secs = remainingSec % 60;
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+// ---- Cooldowns ----
 
 // Per-user sabotage cooldown (ms). Default 5 minutes.
 // You *can* override with CREDIT_SABOTAGE_COOLDOWN_MS in .env.local if you want.
 const SABOTAGE_COOLDOWN_MS: number = Number(
   process.env.CREDIT_SABOTAGE_COOLDOWN_MS ?? "300000",
 );
-
 // key: `${guildId}:${userId}` -> last sabotage timestamp
 const sabotageCooldown = new Map<string, number>();
+
+// Per-user steal cooldown (ms). Default 5 minutes.
+// Optional override: CREDIT_STEAL_COOLDOWN_MS
+const STEAL_COOLDOWN_MS: number = Number(
+  process.env.CREDIT_STEAL_COOLDOWN_MS ?? "300000",
+);
+// key: `${guildId}:${userId}` -> last steal timestamp
+const stealCooldown = new Map<string, number>();
 
 export const data = new SlashCommandBuilder()
   .setName("credit")
@@ -283,6 +297,23 @@ export async function execute(
       return;
     }
 
+    // Cooldown check (per guild + thief)
+    const stealKey = `${guildId}:${thief.id}`;
+    const nowMs = Date.now();
+    const lastSteal = stealCooldown.get(stealKey) ?? 0;
+    const stealElapsed = nowMs - lastSteal;
+
+    if (stealElapsed < STEAL_COOLDOWN_MS) {
+      const remainingMs = STEAL_COOLDOWN_MS - stealElapsed;
+      await interaction.reply({
+        content: `You’re still cooling off from your last heist. Cooldown remaining: **${formatCooldown(
+          remainingMs,
+        )}**.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
     const victimScore = getScore(guildId, target.id);
     if (victimScore <= 0) {
       await interaction.reply({
@@ -321,6 +352,9 @@ export async function execute(
       `Stole from ${target.tag}`,
     );
 
+    // Burn cooldown only on successful steal
+    stealCooldown.set(stealKey, nowMs);
+
     const embed = new EmbedBuilder()
       .setTitle("🕵️ Social Credit Heist")
       .setDescription(
@@ -330,6 +364,14 @@ export async function execute(
       )
       .setColor(0xffc857)
       .setFooter({ text: "Crime always pays… until it doesn’t." });
+
+    // Heist gif: prefer negative (victim pain), fallback positive
+    const heistGif =
+      getRandomGif(guildId, "negative") ??
+      getRandomGif(guildId, "positive");
+    if (heistGif) {
+      embed.setImage(heistGif);
+    }
 
     await interaction.reply({ embeds: [embed] });
     return;
@@ -351,7 +393,7 @@ export async function execute(
     if (target.id === attacker.id) {
       await interaction.reply({
         content:
-          "You’re trying to sabotage **yourself**. Even James Bond didn’t do that. Pick a different target.",
+          "You’re trying to sabotage **yourself** are you mildly retarded? Even James Bond didn’t do that. Pick a different target.",
         ephemeral: true,
       });
       return;
@@ -364,14 +406,10 @@ export async function execute(
 
     if (elapsed < SABOTAGE_COOLDOWN_MS) {
       const remainingMs = SABOTAGE_COOLDOWN_MS - elapsed;
-      const remainingSec = Math.ceil(remainingMs / 1000);
-      const mins = Math.floor(remainingSec / 60);
-      const secs = remainingSec % 60;
-      const friendly =
-        mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-
       await interaction.reply({
-        content: `You recently attempted sabotage. Cooldown remaining: **${friendly}**.`,
+        content: `You recently attempted sabotage This isn't a race dumbass. Cooldown remaining: **${formatCooldown(
+          remainingMs,
+        )}**.`,
         ephemeral: true,
       });
       return;
@@ -453,7 +491,8 @@ export async function execute(
 
     const sabotageGif =
       getRandomGif(guildId, "sabotage") ??
-      getRandomGif(guildId, "negative");
+      getRandomGif(guildId, "negative") ??
+      getRandomGif(guildId, "positive");
     if (sabotageGif) {
       embed.setImage(sabotageGif);
     }
