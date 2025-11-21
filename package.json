@@ -11,11 +11,11 @@
     "register": "tsx scripts/register-commands.ts"
   },
   "dependencies": {
-    "@discordjs/voice": "^0.18.0",
     "better-sqlite3": "^9.4.3",
     "discord.js": "^14.16.0",
-    "dotenv": "^16.4.5",
-    "shoukaku": "^5.0.15"
+    "shoukaku": "^4.1.0",
+    "@discordjs/voice": "^0.19.0",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.10",
