@@ -4,7 +4,7 @@ import type { Client } from "discord.js";
 
 let shoukaku: Shoukaku | null = null;
 
-export function getShoukaku(client: Client) {
+export function getShoukaku(client: Client): Shoukaku {
   if (shoukaku) return shoukaku;
 
   const pass = process.env.LAVALINK_PASSWORD;
@@ -28,16 +28,19 @@ export function getShoukaku(client: Client) {
     voiceConnectionTimeout: 15,
   });
 
-  shoukaku.on("ready", (name) => {
+  shoukaku.on("ready", (name: string) => {
     console.log(`[MUSIC] Lavalink node ready: ${name}`);
   });
-  shoukaku.on("error", (name, err) => {
+
+  shoukaku.on("error", (name: string, err: unknown) => {
     console.error(`[MUSIC] Lavalink node error: ${name}`, err);
   });
-  shoukaku.on("close", (name, code, reason) => {
+
+  shoukaku.on("close", (name: string, code: number, reason: string) => {
     console.warn(`[MUSIC] Lavalink node closed: ${name} ${code} ${reason}`);
   });
-  shoukaku.on("reconnecting", (name) => {
+
+  shoukaku.on("reconnecting", (name: string) => {
     console.warn(`[MUSIC] Lavalink node reconnecting: ${name}`);
   });
 
