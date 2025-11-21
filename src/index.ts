@@ -8,6 +8,7 @@ import {
 } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import { handleMusicButton } from "./commands/music.js";
+import { initShoukaku } from "./music/shoukaku.js";
 import {
   getTriggers,
   adjustScore,
@@ -147,11 +148,14 @@ const client = new Client({
   ],
 });
 
+// IMPORTANT: Shoukaku MUST be initialized before client.login()
+initShoukaku(client);
+
 // Afterdark keyword responder (NSFW keyword -> programmed response)
 installAfterdarkKeywordListener(client);
 
 client.once(Events.ClientReady, (c) => {
-  console.log(`Yak Yak ready as ${c.user.tag}`);
+  console.log(`Social Credit bot ready as ${c.user.tag}`);
   console.log(
     `[config] trigger cooldown: ${triggerCooldownMs}ms (~${
       (triggerCooldownMs / 1000).toFixed(1)
