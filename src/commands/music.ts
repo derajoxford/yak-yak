@@ -1,341 +1,417 @@
 // src/commands/music.ts
 import {
   SlashCommandBuilder,
-  type ChatInputCommandInteraction,
-  type ButtonInteraction,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  GuildMember,
+  type ChatInputCommandInteraction,
+  type ButtonInteraction,
 } from "discord.js";
-
 import {
-  initShoukaku,
+  LoadType,
+  PlayerEventType,
+  type Track,
+  type Player,
+} from "shoukaku";
+import {
   getShoukaku,
+  getIdealNode,
   joinOrGetPlayer,
-  leaveGuild,
+  leavePlayer,
 } from "../music/shoukaku.js";
 
-import type {
-  Track,
-  LavalinkResponse,
-  SearchResult,
-  TrackResult,
-  PlaylistResult,
-} from "shoukaku";
+export const data = new SlashCommandBuilder()
+  .setName("music")
+  .setDescription("Play music in voice using Lavalink")
+  .addSubcommand((s) =>
+    s.setName("join").setDescription("Join your voice channel"),
+  )
+  .addSubcommand((s) =>
+    s
+      .setName("play")
+      .setDescription("Search or play a URL")
+      .addStringOption((o) =>
+        o
+          .setName("query")
+          .setDescription("YouTube/URL or search terms")
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((s) =>
+    s.setName("skip").setDescription("Skip current track"),
+  )
+  .addSubcommand((s) =>
+    s.setName("stop").setDescription("Stop and clear the queue"),
+  )
+  .addSubcommand((s) =>
+    s.setName("pause").setDescription("Pause playback"),
+  )
+  .addSubcommand((s) =>
+    s.setName("resume").setDescription("Resume playback"),
+  )
+  .addSubcommand((s) =>
+    s.setName("queue").setDescription("Show the queue"),
+  )
+  .addSubcommand((s) =>
+    s
+      .setName("volume")
+      .setDescription("Set volume (0-200)")
+      .addIntegerOption((o) =>
+        o
+          .setName("amount")
+          .setDescription("Volume percent")
+          .setMinValue(0)
+          .setMaxValue(200)
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((s) =>
+    s.setName("leave").setDescription("Leave voice and clear state"),
+  );
 
-type QueueItem = {
+interface QueueItem {
   encoded: string;
   title: string;
   uri: string;
-  author?: string;
-  length?: number;
-  artworkUrl?: string;
-  requesterId: string;
-};
+  lengthMs: number;
+}
 
 const queues = new Map<string, QueueItem[]>();
-const boundPlayers = new WeakSet<any>();
+const nowPlaying = new Map<string, QueueItem | null>();
+const boundPlayers = new Set<string>();
 
-function getQueue(guildId: string) {
-  let q = queues.get(guildId);
-  if (!q) {
-    q = [];
-    queues.set(guildId, q);
-  }
-  return q;
+function getQueue(guildId: string): QueueItem[] {
+  if (!queues.has(guildId)) queues.set(guildId, []);
+  return queues.get(guildId)!;
 }
 
-function tracksFromResult(result: LavalinkResponse | null): Track[] {
-  if (!result) return [];
+function ensurePlayerEvents(player: Player) {
+  const gid = player.guildId;
+  if (boundPlayers.has(gid)) return;
+  boundPlayers.add(gid);
 
-  // v4 returns a discriminated union with data
-  switch (result.loadType) {
-    case "track":
-      return [(result as TrackResult).data];
-    case "search":
-      return (result as SearchResult).data;
-    case "playlist":
-      return (result as PlaylistResult).data.tracks;
-    default:
-      return [];
-  }
+  player.on(PlayerEventType.TRACK_END_EVENT, async (ev: any) => {
+    if (
+      ev?.reason === "finished" ||
+      ev?.reason === "stopped" ||
+      ev?.reason === "cleanup"
+    ) {
+      await playNext(gid, player).catch(() => {});
+    }
+  });
+
+  player.on(PlayerEventType.TRACK_EXCEPTION_EVENT, async () => {
+    await playNext(gid, player).catch(() => {});
+  });
+
+  player.on(PlayerEventType.TRACK_STUCK_EVENT, async () => {
+    await playNext(gid, player).catch(() => {});
+  });
 }
 
-async function playNext(guildId: string, player: any) {
+async function playNext(guildId: string, player: Player) {
   const q = getQueue(guildId);
   const next = q.shift();
   if (!next) {
-    await player.stopTrack().catch(() => {});
+    nowPlaying.set(guildId, null);
+    try {
+      await player.stopTrack();
+    } catch {}
     return;
   }
+
+  nowPlaying.set(guildId, next);
 
   await player.playTrack({ track: next.encoded });
   await player.setVolume(100).catch(() => {});
 }
 
-function bindPlayerOnce(guildId: string, player: any) {
-  if (boundPlayers.has(player)) return;
-  boundPlayers.add(player);
-
-  player.on("end", async () => {
-    try {
-      await playNext(guildId, player);
-    } catch (e) {
-      console.error("[MUSIC] playNext(end) failed:", e);
-    }
-  });
-
-  player.on("exception", (e: any) => {
-    console.error("[MUSIC] Track exception:", e);
-  });
-
-  player.on("stuck", (e: any) => {
-    console.warn("[MUSIC] Track stuck:", e);
-  });
+function buildControls(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("music:pause")
+      .setEmoji("⏸️")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music:resume")
+      .setEmoji("▶️")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music:skip")
+      .setEmoji("⏭️")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music:stop")
+      .setEmoji("⏹️")
+      .setStyle(ButtonStyle.Danger),
+  );
 }
 
-async function ensureInVoice(interaction: ChatInputCommandInteraction) {
-  const member = interaction.member as GuildMember | null;
-  const vc = member?.voice?.channel;
+async function getMemberVoiceChannelId(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+): Promise<string | null> {
+  const member: any = interaction.member;
+  const channelId = member?.voice?.channelId;
+  return channelId ?? null;
+}
 
-  if (!interaction.guildId || !interaction.guild) {
-    await interaction.reply({ content: "❌ Must be used in a guild.", ephemeral: true });
-    return null;
-  }
+async function ensureJoined(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+): Promise<Player | null> {
+  const guildId = interaction.guildId;
+  if (!guildId) return null;
 
-  if (!vc) {
+  const channelId = await getMemberVoiceChannelId(interaction);
+  if (!channelId) return null;
+
+  const shardId = interaction.guild?.shardId ?? 0;
+
+  // Shoukaku must already be initialized in src/index.ts
+  getShoukaku();
+
+  const player = await joinOrGetPlayer({ guildId, channelId, shardId });
+  ensurePlayerEvents(player);
+
+  return player;
+}
+
+export async function execute(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const sub = interaction.options.getSubcommand();
+  const guildId = interaction.guildId;
+
+  if (!guildId) {
     await interaction.reply({
-      content: "❌ You need to be in a voice channel.",
+      content: "This command only works in a server.",
       ephemeral: true,
     });
-    return null;
-  }
-
-  // init shoukaku (once)
-  initShoukaku(interaction.client);
-
-  const shardId = interaction.guild.shardId ?? 0;
-
-  const player = await joinOrGetPlayer(
-    interaction.client,
-    interaction.guildId,
-    vc.id,
-    shardId
-  );
-
-  bindPlayerOnce(interaction.guildId, player);
-
-  return { player, vc };
-}
-
-export const data = new SlashCommandBuilder()
-  .setName("music")
-  .setDescription("Yak Yak music player")
-  .addSubcommand((s) =>
-    s.setName("join").setDescription("Join your voice channel")
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("play")
-      .setDescription("Play or queue a track")
-      .addStringOption((o) =>
-        o
-          .setName("query")
-          .setDescription("URL or search text")
-          .setRequired(true)
-      )
-  )
-  .addSubcommand((s) =>
-    s.setName("skip").setDescription("Skip current track")
-  )
-  .addSubcommand((s) =>
-    s.setName("pause").setDescription("Pause playback")
-  )
-  .addSubcommand((s) =>
-    s.setName("resume").setDescription("Resume playback")
-  )
-  .addSubcommand((s) =>
-    s.setName("stop").setDescription("Stop and clear queue, leave VC")
-  )
-  .addSubcommand((s) =>
-    s.setName("queue").setDescription("Show the queue")
-  );
-
-export async function handleMusicButton(interaction: ButtonInteraction) {
-  if (!interaction.guildId) return;
-
-  const s = getShoukaku();
-  const player = s.players.get(interaction.guildId);
-
-  if (!player) {
-    await interaction.reply({ content: "❌ No active player.", ephemeral: true });
     return;
   }
 
-  const action = interaction.customId.split(":")[1];
-
-  try {
-    if (action === "skip") {
-      await player.stopTrack();
-      await interaction.reply({ content: "⏭️ Skipped.", ephemeral: true });
-    } else if (action === "pause") {
-      await player.setPaused(true);
-      await interaction.reply({ content: "⏸️ Paused.", ephemeral: true });
-    } else if (action === "resume") {
-      await player.setPaused(false);
-      await interaction.reply({ content: "▶️ Resumed.", ephemeral: true });
-    } else if (action === "stop") {
-      queues.set(interaction.guildId, []);
-      await leaveGuild(interaction.guildId);
-      await interaction.reply({ content: "⏹️ Stopped & left VC.", ephemeral: true });
-    }
-  } catch (e) {
-    console.error("[MUSIC] button error:", e);
-    await interaction.reply({ content: "❌ Button failed.", ephemeral: true });
-  }
-}
-
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const sub = interaction.options.getSubcommand();
-  const guildId = interaction.guildId!;
-
-  try {
-    if (sub === "join") {
-      const joined = await ensureInVoice(interaction);
-      if (!joined) return;
-
-      await interaction.reply({
-        content: "✅ Joined your voice channel.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "play") {
-      const joined = await ensureInVoice(interaction);
-      if (!joined) return;
-
-      const { player } = joined;
-
-      const query = interaction.options.getString("query", true).trim();
-      const s = getShoukaku();
-      const node = s.getNode(); // v4 API
-
-      const identifier =
-        query.startsWith("http://") || query.startsWith("https://")
-          ? query
-          : `ytsearch:${query}`;
-
-      const res = await node.rest.resolve(identifier);
-      const tracks = tracksFromResult(res);
-
-      if (!tracks.length) {
-        await interaction.reply({
-          content: "❌ No results.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const q = getQueue(guildId);
-
-      for (const t of tracks) {
-        q.push({
-          encoded: t.encoded,
-          title: t.info.title ?? "track",
-          uri: t.info.uri ?? "",
-          author: t.info.author,
-          length: t.info.length,
-          artworkUrl: t.info.artworkUrl,
-          requesterId: interaction.user.id,
-        });
-      }
-
-      // If nothing currently playing, start immediately.
-      if (!player.data?.track) {
-        await playNext(guildId, player);
-      }
-
-      await interaction.reply({
-        content: `✅ Queued **${tracks[0].info.title ?? "track"}** — ${tracks.length} track(s).`,
-        ephemeral: true,
-      });
-
-      return;
-    }
-
-    // For the rest, we need an existing player
-    const s = getShoukaku();
-    const player = s.players.get(guildId);
-
+  if (sub === "join") {
+    const player = await ensureJoined(interaction);
     if (!player) {
       await interaction.reply({
-        content: "❌ No active player. Use `/music join` or `/music play` first.",
+        content: "Join a voice channel first.",
+        ephemeral: true,
+      });
+      return;
+    }
+    await interaction.reply({
+      content: "✅ Joined your voice channel.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === "leave") {
+    await leavePlayer(guildId);
+    queues.delete(guildId);
+    nowPlaying.delete(guildId);
+    boundPlayers.delete(guildId);
+    await interaction.reply({
+      content: "👋 Left voice and cleared queue.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === "play") {
+    const player = await ensureJoined(interaction);
+    if (!player) {
+      await interaction.reply({
+        content: "Join a voice channel first.",
         ephemeral: true,
       });
       return;
     }
 
-    if (sub === "skip") {
-      await player.stopTrack();
-      await interaction.reply({ content: "⏭️ Skipped.", ephemeral: true });
+    // Let voice session PATCH settle before starting track.
+    await new Promise((r) => setTimeout(r, 500));
+
+    const query = interaction.options.getString("query", true).trim();
+    const identifier = /^https?:\/\//i.test(query)
+      ? query
+      : `ytsearch:${query}`;
+
+    const node = getIdealNode();
+    const result = await node.rest.resolve(identifier);
+
+    let tracks: Track[] = [];
+
+    // Shoukaku v4 resolve() returns unions with loadType + data. :contentReference[oaicite:3]{index=3}
+    switch (result.loadType) {
+      case LoadType.TRACK:
+        tracks = [result.data as Track];
+        break;
+      case LoadType.SEARCH:
+        tracks = result.data as Track[];
+        break;
+      case LoadType.PLAYLIST:
+        tracks = (result.data as any).tracks as Track[];
+        break;
+      case LoadType.EMPTY:
+        tracks = [];
+        break;
+      case LoadType.ERROR:
+      default:
+        tracks = [];
+        break;
+    }
+
+    if (!tracks.length) {
+      await interaction.reply({ content: "❌ No results.", ephemeral: true });
       return;
     }
 
-    if (sub === "pause") {
-      await player.setPaused(true);
-      await interaction.reply({ content: "⏸️ Paused.", ephemeral: true });
+    const q = getQueue(guildId);
+    for (const t of tracks) {
+      q.push({
+        encoded: t.encoded,
+        title: t.info.title ?? "track",
+        uri: t.info.uri ?? "",
+        lengthMs: t.info.length ?? 0,
+      });
+    }
+
+    // If nothing currently playing, start.
+    const cur = nowPlaying.get(guildId);
+    if (!cur) {
+      await playNext(guildId, player);
+    }
+
+    const first = tracks[0];
+    const playlistCount = tracks.length;
+
+    await interaction.reply({
+      content: `✅ Queued **${first.info.title ?? "track"}** — ${playlistCount} track(s).`,
+      components: [buildControls()],
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // Everything else wants a player already in the guild.
+  const s = getShoukaku();
+  const player = s.players.get(guildId); // players map moved to shoukaku.players in v4. :contentReference[oaicite:4]{index=4}
+
+  if (!player) {
+    await interaction.reply({
+      content: "No active player. Use /music join first.",
+      ephemeral: true,
+    });
+    return;
+  }
+  ensurePlayerEvents(player);
+
+  if (sub === "skip") {
+    await player.stopTrack();
+    await interaction.reply({ content: "⏭️ Skipped.", ephemeral: true });
+    return;
+  }
+
+  if (sub === "stop") {
+    getQueue(guildId).length = 0;
+    nowPlaying.set(guildId, null);
+    await player.stopTrack();
+    await interaction.reply({
+      content: "⏹️ Stopped and cleared queue.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === "pause") {
+    await player.setPaused(true);
+    await interaction.reply({ content: "⏸️ Paused.", ephemeral: true });
+    return;
+  }
+
+  if (sub === "resume") {
+    await player.setPaused(false);
+    await interaction.reply({ content: "▶️ Resumed.", ephemeral: true });
+    return;
+  }
+
+  if (sub === "volume") {
+    const amount = interaction.options.getInteger("amount", true);
+    await player.setVolume(amount);
+    await interaction.reply({
+      content: `🔊 Volume set to ${amount}%.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === "queue") {
+    const q = getQueue(guildId);
+    if (!q.length) {
+      await interaction.reply({ content: "Queue empty.", ephemeral: true });
       return;
     }
 
-    if (sub === "resume") {
-      await player.setPaused(false);
-      await interaction.reply({ content: "▶️ Resumed.", ephemeral: true });
-      return;
-    }
+    const lines = q.slice(0, 10).map((it, i) => `${i + 1}. ${it.title}`);
+    const embed = new EmbedBuilder()
+      .setTitle("Music Queue")
+      .setDescription(lines.join("\n"))
+      .setFooter({ text: q.length > 10 ? `and ${q.length - 10} more…` : "" });
 
-    if (sub === "stop") {
-      queues.set(guildId, []);
-      await leaveGuild(guildId);
-      await interaction.reply({ content: "⏹️ Stopped & left VC.", ephemeral: true });
-      return;
-    }
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return;
+  }
 
-    if (sub === "queue") {
-      const q = getQueue(guildId);
-      if (!q.length) {
-        await interaction.reply({ content: "Queue empty.", ephemeral: true });
+  await interaction.reply({ content: "Unknown subcommand.", ephemeral: true });
+}
+
+// Button interactions from src/index.ts
+export async function handleMusicButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const action = interaction.customId.split(":")[1];
+  const guildId = interaction.guildId;
+  if (!guildId) return;
+
+  const s = getShoukaku();
+  const player = s.players.get(guildId);
+
+  if (!player) {
+    await interaction.reply({ content: "No active player.", ephemeral: true });
+    return;
+  }
+
+  try {
+    switch (action) {
+      case "pause":
+        await player.setPaused(true);
+        await interaction.reply({ content: "⏸️ Paused.", ephemeral: true });
         return;
-      }
-
-      const list = q
-        .slice(0, 15)
-        .map((it, i) => `${i + 1}. ${it.title}`)
-        .join("\n");
-
-      const embed = new EmbedBuilder()
-        .setTitle("Yak Yak Queue")
-        .setDescription(list);
-
-      await interaction.reply({ embeds: [embed], ephemeral: true });
-      return;
+      case "resume":
+        await player.setPaused(false);
+        await interaction.reply({ content: "▶️ Resumed.", ephemeral: true });
+        return;
+      case "skip":
+        await player.stopTrack();
+        await interaction.reply({ content: "⏭️ Skipped.", ephemeral: true });
+        return;
+      case "stop":
+        getQueue(guildId).length = 0;
+        nowPlaying.set(guildId, null);
+        await player.stopTrack();
+        await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
+        return;
+      default:
+        await interaction.reply({ content: "Unknown action.", ephemeral: true });
+        return;
     }
-
-    await interaction.reply({ content: "Unknown subcommand.", ephemeral: true });
   } catch (err) {
-    console.error("[MUSIC] execute crash:", err);
-    if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({
-        content: "Music command crashed. Check logs.",
-        ephemeral: true,
-      }).catch(() => {});
-    } else {
+    console.error("[MUSIC] button crash:", err);
+    try {
       await interaction.reply({
-        content: "Music command crashed. Check logs.",
+        content: "Music action failed.",
         ephemeral: true,
-      }).catch(() => {});
-    }
+      });
+    } catch {}
   }
 }
