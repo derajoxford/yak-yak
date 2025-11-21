@@ -144,18 +144,23 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.GuildVoiceStates, // REQUIRED for music VC connects
+    GatewayIntentBits.GuildVoiceStates, // REQUIRED for Lavalink voice updates
   ],
 });
-
-// IMPORTANT: Shoukaku MUST be initialized before client.login()
-initShoukaku(client);
 
 // Afterdark keyword responder (NSFW keyword -> programmed response)
 installAfterdarkKeywordListener(client);
 
 client.once(Events.ClientReady, (c) => {
-  console.log(`Social Credit bot ready as ${c.user.tag}`);
+  console.log(`Yak Yak ready as ${c.user.tag}`);
+
+  // bring up Lavalink bridge once (doesn't kill bot if missing env)
+  try {
+    initShoukaku(client);
+  } catch (e) {
+    console.error("[MUSIC] Shoukaku init failed:", e);
+  }
+
   console.log(
     `[config] trigger cooldown: ${triggerCooldownMs}ms (~${
       (triggerCooldownMs / 1000).toFixed(1)
