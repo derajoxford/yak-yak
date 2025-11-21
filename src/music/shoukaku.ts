@@ -6,7 +6,6 @@ import {
   type NodeOption,
   type Player,
   type VoiceChannelOptions,
-  type ShoukakuEvents,
 } from "shoukaku";
 
 let shoukaku: Shoukaku | null = null;
@@ -34,10 +33,9 @@ export function initShoukaku(client: Client): Shoukaku {
   shoukaku = new Shoukaku(
     new Connectors.DiscordJS(client),
     nodes,
-    {} // keep options minimal to satisfy v4 types
+    {}, // minimal opts, v4-safe
   );
 
-  // Use `as any` on event names to avoid TS mismatches across minor versions
   shoukaku.on("ready" as any, (name: string) => {
     console.log(`[lavalink] node ready: ${name}`);
   });
@@ -57,17 +55,17 @@ export function initShoukaku(client: Client): Shoukaku {
 export function getShoukaku(): Shoukaku {
   if (!shoukaku) {
     throw new Error(
-      "Shoukaku not initialized yet. Call initShoukaku(client) on startup."
+      "Shoukaku not initialized yet. Call initShoukaku(client) on startup.",
     );
   }
   return shoukaku;
 }
 
-// Main helper: join if needed, otherwise reuse.
-// If already connected to a *different* VC, leave first then rejoin.
-// This fixes: "This guild already have an existing connection".
+// Join if needed, otherwise reuse.
+// If already connected to a different VC, leave first.
+// If join still throws "existing connection", force leave + retry once.
 export async function getOrCreatePlayer(
-  opts: VoiceChannelOptions
+  opts: VoiceChannelOptions,
 ): Promise<Player> {
   const sk = getShoukaku();
 
@@ -75,15 +73,25 @@ export async function getOrCreatePlayer(
   const existingPlayer = sk.players.get(opts.guildId);
 
   if (existingConn && existingPlayer) {
-    if (existingConn.channelId === opts.channelId) {
+    if ((existingConn as any).channelId === opts.channelId) {
       return existingPlayer;
     }
-
-    // different channel => drop old connection first
+    await sk.leaveVoiceChannel(opts.guildId).catch(() => {});
+  } else if (existingConn) {
+    // connection exists but no player => nuke it
     await sk.leaveVoiceChannel(opts.guildId).catch(() => {});
   }
 
-  return sk.joinVoiceChannel(opts);
+  try {
+    return await sk.joinVoiceChannel(opts);
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    if (msg.toLowerCase().includes("existing connection")) {
+      await sk.leaveVoiceChannel(opts.guildId).catch(() => {});
+      return await sk.joinVoiceChannel(opts);
+    }
+    throw err;
+  }
 }
 
 export async function leavePlayer(guildId: string): Promise<void> {
