@@ -144,23 +144,22 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.GuildVoiceStates, // REQUIRED for Lavalink voice updates
+    GatewayIntentBits.GuildVoiceStates, // REQUIRED for Shoukaku voice updates
   ],
 });
 
 // Afterdark keyword responder (NSFW keyword -> programmed response)
 installAfterdarkKeywordListener(client);
 
+// ---- MUSIC INIT (do not crash whole bot if missing env) ----
+try {
+  initShoukaku(client);
+} catch (err) {
+  console.error("[MUSIC] init failed (music disabled):", err);
+}
+
 client.once(Events.ClientReady, (c) => {
   console.log(`Yak Yak ready as ${c.user.tag}`);
-
-  // bring up Lavalink bridge once (doesn't kill bot if missing env)
-  try {
-    initShoukaku(client);
-  } catch (e) {
-    console.error("[MUSIC] Shoukaku init failed:", e);
-  }
-
   console.log(
     `[config] trigger cooldown: ${triggerCooldownMs}ms (~${
       (triggerCooldownMs / 1000).toFixed(1)
@@ -251,14 +250,11 @@ client.on(Events.MessageCreate, async (message) => {
       const elapsed = now - lastHit;
 
       if (elapsed < triggerCooldownMs) {
-        // Still on cooldown; skip this trigger for this message
         continue;
       }
 
-      // Record this hit time
       triggerCooldownMap.set(key, now);
 
-      // ---- Apply Social Credit change ----
       const { previous, current } = adjustScore(
         message.guildId,
         null,
@@ -271,9 +267,7 @@ client.on(Events.MessageCreate, async (message) => {
       const gif = pickTriggerGif(message.guildId, positive);
 
       const embed = new EmbedBuilder()
-        .setTitle(
-          positive ? "Social Credit Awarded" : "Social Credit Deducted",
-        )
+        .setTitle(positive ? "Social Credit Awarded" : "Social Credit Deducted")
         .setDescription(
           `${message.author} triggered **"${trig.phrase}"**.\nDelta: **${
             trig.delta > 0 ? `+${trig.delta}` : trig.delta
@@ -281,9 +275,7 @@ client.on(Events.MessageCreate, async (message) => {
         )
         .setFooter({ text: "Automated Social Credit trigger" });
 
-      if (gif) {
-        embed.setImage(gif);
-      }
+      if (gif) embed.setImage(gif);
 
       await message.channel.send({ embeds: [embed] });
     }
@@ -292,8 +284,6 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// Distinct-user reaction bonus: when a message reaches N distinct reactors,
-// award the author a one-time bonus (within the daily activity cap).
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   try {
     if (user.bot) return;
@@ -303,7 +293,6 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (!message.guildId) return;
     if (guildId && message.guildId !== guildId) return;
 
-    // We only care about messages with an identifiable author in guilds
     const author = message.author;
     if (!author || author.bot) return;
 
@@ -318,16 +307,11 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
     state.users.add(user.id);
 
-    if (state.users.size < REACTION_MIN_DISTINCT) {
-      // not enough unique reactors yet
-      return;
-    }
+    if (state.users.size < REACTION_MIN_DISTINCT) return;
 
-    // Threshold hit; mark as rewarded so we only do this once
     state.rewarded = true;
     reactionTracker.set(key, state);
 
-    // Enforce daily cap for the author
     const authorId = author.id;
     const todayTotal = getTodayActivityTotal(message.guildId, authorId);
     if (todayTotal >= ACTIVITY_DAILY_CAP) return;
@@ -338,7 +322,6 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
     const amount = randomInt(REACTION_BONUS_MIN, maxBonus);
 
-    // Actor is the last reactor who pushed it over the threshold
     adjustScore(
       message.guildId,
       user.id,
@@ -346,8 +329,6 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
       amount,
       "Reaction Bonus (message popped off)",
     );
-
-    // Silent; shows up in /credit show + future /credit rapsheet
   } catch (err) {
     console.error("Error handling reaction bonus:", err);
   }
