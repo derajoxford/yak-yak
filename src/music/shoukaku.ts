@@ -1,5 +1,5 @@
 // src/music/shoukaku.ts
-import { Shoukaku, Connectors, type NodeOption } from "shoukaku";
+import { Shoukaku, Connectors, type NodeOption, type Player } from "shoukaku";
 import type { Client } from "discord.js";
 
 let shoukaku: Shoukaku | null = null;
@@ -61,39 +61,33 @@ export function getShoukaku(): Shoukaku {
   return shoukaku;
 }
 
-// force self mute/deafen OFF if the runtime exposes connection
-function forceUnmute(player: any) {
-  try {
-    const conn = player?.connection;
-    if (conn?.setMute) conn.setMute(false);
-    if (conn?.setDeaf) conn.setDeaf(false);
-  } catch {}
+function playerLooksAlive(p: any, wantChannelId: string): boolean {
+  const ch = p?.connection?.channelId ?? null; // real VC id per docs
+  const connected = Boolean(p?.state?.connected); // Lavalink connected flag
+  return ch === wantChannelId && connected;
 }
 
 export async function joinOrGetPlayer(
   client: Client,
   guildId: string,
   channelId: string,
-) {
+): Promise<Player> {
   const s = shoukaku ?? initShoukaku(client);
 
   const existing = s.players.get(guildId) as any | undefined;
   if (existing) {
-    // If already connected somewhere else, hard leave then rejoin
-    const existingChannelId =
-      existing?.connection?.channelId ??
-      existing?.channelId ??
-      null;
-
-    if (existingChannelId && existingChannelId !== channelId) {
-      try {
-        await s.leaveVoiceChannel(guildId);
-      } catch {}
-    } else {
-      // same channel: just make sure we're not muted/deafened
-      forceUnmute(existing);
-      return existing;
+    // If it's alive in the same channel, reuse it.
+    if (playerLooksAlive(existing, channelId)) {
+      return existing as Player;
     }
+
+    // Otherwise it's stale or in wrong channel → nuke it.
+    try {
+      console.log(
+        `[MUSIC] Existing player stale/wrong channel (have=${existing?.connection?.channelId}, want=${channelId}, connected=${existing?.state?.connected}). Leaving...`,
+      );
+      await s.leaveVoiceChannel(guildId);
+    } catch {}
   }
 
   const shardId = client.guilds.cache.get(guildId)?.shardId ?? 0;
@@ -106,17 +100,25 @@ export async function joinOrGetPlayer(
       deaf: false,
       mute: false,
     });
-    forceUnmute(player as any);
     return player;
   } catch (err: any) {
     const msg = String(err?.message ?? err);
+
+    // If Shoukaku claims existing connection, force cleanup then rejoin once.
     if (msg.includes("already have an existing connection")) {
-      const again = s.players.get(guildId) as any | undefined;
-      if (again) {
-        forceUnmute(again);
-        return again;
-      }
+      try {
+        await s.leaveVoiceChannel(guildId);
+      } catch {}
+      const player = await s.joinVoiceChannel({
+        guildId,
+        channelId,
+        shardId,
+        deaf: false,
+        mute: false,
+      });
+      return player;
     }
+
     throw err;
   }
 }
