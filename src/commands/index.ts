@@ -23,7 +23,15 @@ export interface Command {
 }
 
 // Single source of truth for all commands
-const commands: Command[] = [ping, social, funGate, credit, tithes, afterdark, music];
+const commands: Command[] = [
+  ping,
+  social,
+  funGate,
+  credit,
+  tithes,
+  afterdark,
+  music,
+];
 
 export const commandMap = new Map<string, Command>(
   commands.map((cmd) => [cmd.data.name, cmd]),
