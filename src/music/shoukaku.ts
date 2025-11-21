@@ -18,14 +18,14 @@ function buildNodes(): NodeOption[] {
   return [
     {
       name: "local",
-      url: `${host}:${port}`, // host:port
+      url: `${host}:${port}`,
       auth,
       secure: false,
     },
   ];
 }
 
-// Keep your old import working: src/index.ts expects initShoukaku()
+// src/index.ts expects initShoukaku()
 export function initShoukaku(client: Client): Shoukaku {
   if (shoukaku) return shoukaku;
 
@@ -72,18 +72,29 @@ export async function joinOrGetPlayer(
 ): Promise<Player> {
   const s = shoukaku ?? initShoukaku(client);
 
+  // ✅ If already connected in this guild, reuse it.
+  const existing = s.players.get(guildId);
+  if (existing) return existing;
+
   const shardId = client.guilds.cache.get(guildId)?.shardId ?? 0;
 
-  // v4 join options support deaf/mute here — no player.connection in v4
-  const player = await s.joinVoiceChannel({
-    guildId,
-    channelId,
-    shardId,
-    deaf: false,
-    mute: false,
-  });
-
-  return player;
+  try {
+    const player = await s.joinVoiceChannel({
+      guildId,
+      channelId,
+      shardId,
+      deaf: false,
+      mute: false,
+    });
+    return player;
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    if (msg.includes("already have an existing connection")) {
+      const again = s.players.get(guildId);
+      if (again) return again;
+    }
+    throw err;
+  }
 }
 
 export async function leavePlayer(
