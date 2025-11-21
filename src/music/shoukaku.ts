@@ -1,11 +1,12 @@
 // src/music/shoukaku.ts
-import type { Client, VoiceBasedChannel } from "discord.js";
+import type { Client } from "discord.js";
 import {
   Shoukaku,
   Connectors,
   type NodeOption,
-  type ShoukakuOptions,
   type Player,
+  type VoiceChannelOptions,
+  type ShoukakuEvents,
 } from "shoukaku";
 
 let shoukaku: Shoukaku | null = null;
@@ -16,6 +17,7 @@ export function initShoukaku(client: Client): Shoukaku {
   const host = process.env.LAVALINK_HOST ?? "127.0.0.1";
   const port = Number(process.env.LAVALINK_PORT ?? "2333");
   const password = process.env.LAVALINK_PASSWORD;
+
   if (!password) {
     throw new Error("LAVALINK_PASSWORD env var missing");
   }
@@ -29,35 +31,24 @@ export function initShoukaku(client: Client): Shoukaku {
     },
   ];
 
-  // Shoukaku v4 option names
-  const options: ShoukakuOptions = {
-    moveOnDisconnect: false,
-    resume: true,
-    resumeTimeout: 60,
-    reconnectTries: 5,
-    reconnectInterval: 5,
-    restTimeout: 10_000,
-  };
+  shoukaku = new Shoukaku(
+    new Connectors.DiscordJS(client),
+    nodes,
+    {} // keep options minimal to satisfy v4 types
+  );
 
-  // IMPORTANT: create before client.login()
-  shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, options);
-
-  shoukaku.on("ready", (name: string) => {
+  // Use `as any` on event names to avoid TS mismatches across minor versions
+  shoukaku.on("ready" as any, (name: string) => {
     console.log(`[lavalink] node ready: ${name}`);
   });
-
-  shoukaku.on("error", (name: string, err: unknown) => {
+  shoukaku.on("error" as any, (name: string, err: unknown) => {
     console.error(`[lavalink] node error: ${name}`, err);
   });
-
-  shoukaku.on("close", (name: string, code: number, reason: string) => {
-    console.warn(
-      `[lavalink] node closed: ${name} code=${code} reason=${reason}`,
-    );
+  shoukaku.on("close" as any, (name: string, code: number, reason: string) => {
+    console.warn(`[lavalink] node closed: ${name} (${code}) ${reason}`);
   });
-
-  shoukaku.on("reconnecting", (name: string, attemptsLeft: number) => {
-    console.warn(`[lavalink] reconnecting ${name}, left=${attemptsLeft}`);
+  shoukaku.on("reconnecting" as any, (name: string) => {
+    console.warn(`[lavalink] reconnecting: ${name}`);
   });
 
   return shoukaku;
@@ -66,45 +57,36 @@ export function initShoukaku(client: Client): Shoukaku {
 export function getShoukaku(): Shoukaku {
   if (!shoukaku) {
     throw new Error(
-      "Shoukaku not initialized. Call initShoukaku(client) before client.login().",
+      "Shoukaku not initialized yet. Call initShoukaku(client) on startup."
     );
   }
   return shoukaku;
 }
 
-type VoiceChannelOptions = {
-  guildId: string;
-  channelId: string;
-  shardId: number;
-  deaf?: boolean;
-  mute?: boolean;
-};
-
-export async function joinPlayer(
-  client: Client,
-  channel: VoiceBasedChannel,
+// Main helper: join if needed, otherwise reuse.
+// If already connected to a *different* VC, leave first then rejoin.
+// This fixes: "This guild already have an existing connection".
+export async function getOrCreatePlayer(
+  opts: VoiceChannelOptions
 ): Promise<Player> {
-  const s = shoukaku ?? initShoukaku(client);
+  const sk = getShoukaku();
 
-  const guildId = channel.guild.id;
-  const channelId = channel.id;
+  const existingConn = sk.connections.get(opts.guildId);
+  const existingPlayer = sk.players.get(opts.guildId);
 
-  const shardId =
-    (channel.guild as any).shardId ??
-    (client.shard?.ids?.[0] ?? 0);
+  if (existingConn && existingPlayer) {
+    if (existingConn.channelId === opts.channelId) {
+      return existingPlayer;
+    }
 
-  const opts: VoiceChannelOptions = {
-    guildId,
-    channelId,
-    shardId,
-    deaf: true,
-  };
+    // different channel => drop old connection first
+    await sk.leaveVoiceChannel(opts.guildId).catch(() => {});
+  }
 
-  // Shoukaku v4 accepts these keys; TS types are off in d.ts
-  return await s.joinVoiceChannel(opts as any);
+  return sk.joinVoiceChannel(opts);
 }
 
 export async function leavePlayer(guildId: string): Promise<void> {
-  if (!shoukaku) return;
-  await shoukaku.leaveVoiceChannel(guildId).catch(() => {});
+  const sk = getShoukaku();
+  await sk.leaveVoiceChannel(guildId).catch(() => {});
 }
