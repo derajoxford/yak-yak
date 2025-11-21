@@ -4,18 +4,15 @@ import {
   type ChatInputCommandInteraction,
   type ButtonInteraction,
   EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   GuildMember,
 } from "discord.js";
 import type { Player, Track } from "shoukaku";
-import { ensurePlayer, getPlayer, leaveGuild } from "../music/shoukaku.js";
+import { ensurePlayer, getPlayer, leaveGuild, getShoukaku } from "../music/shoukaku.js";
 
 type QueueItem = {
   encoded: string;
   title: string;
-  uri: string;
+  uri: string;        // must be string for our code
   author: string;
   length: number;
   requesterId: string;
@@ -35,7 +32,6 @@ function qFor(guildId: string) {
 }
 
 async function forceAudible(player: Player) {
-  // These are safe no-ops if already set
   await player.setGlobalVolume(100);
   await player.setPaused(false);
 }
@@ -212,10 +208,10 @@ export async function execute(
     for (const t of tracks) {
       q.push({
         encoded: t.encoded,
-        title: t.info.title,
-        uri: t.info.uri,
-        author: t.info.author ?? "Unknown",
-        length: t.info.length ?? 0,
+        title: t.info?.title ?? "Unknown Track",
+        uri: t.info?.uri ?? t.info?.identifier ?? "",   // ✅ force string
+        author: t.info?.author ?? "Unknown",
+        length: t.info?.length ?? 0,
         requesterId: interaction.user.id,
       });
     }
@@ -226,7 +222,7 @@ export async function execute(
     }
 
     await interaction.reply({
-      content: `✅ Queued **${tracks[0].info.title}** — ${tracks.length} track(s).`,
+      content: `✅ Queued **${tracks[0].info?.title ?? "track"}** — ${tracks.length} track(s).`,
       ephemeral: true,
     });
     return;
