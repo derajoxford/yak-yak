@@ -7,6 +7,7 @@ import {
   type Message,
 } from "discord.js";
 import { commandMap } from "./commands/index.js";
+import { handleMusicButton } from "./commands/music.js";
 import {
   getTriggers,
   adjustScore,
@@ -142,6 +143,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildVoiceStates, // REQUIRED for music VC connects
   ],
 });
 
@@ -163,6 +165,17 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // ---- MUSIC BUTTONS ----
+  if (interaction.isButton() && interaction.customId.startsWith("music:")) {
+    try {
+      await handleMusicButton(interaction);
+    } catch (err) {
+      console.error("Error handling music button:", err);
+    }
+    return;
+  }
+
+  // ---- SLASH COMMANDS ----
   if (!interaction.isChatInputCommand()) return;
 
   if (guildId && interaction.guildId && interaction.guildId !== guildId) {
