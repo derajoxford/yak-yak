@@ -4,7 +4,7 @@ import { Shoukaku, Connectors, type NodeOption, type Player } from "shoukaku";
 
 let shoukaku: Shoukaku | null = null;
 
-// Keep a simple per-guild player cache
+// per-guild player cache
 const players = new Map<string, Player>();
 
 function mustEnv(name: string, fallback?: string): string {
@@ -18,9 +18,9 @@ export function initShoukaku(client: Client) {
 
   const host = mustEnv("LAVALINK_HOST", "127.0.0.1");
   const port = Number(mustEnv("LAVALINK_PORT", "2333"));
-  const auth = mustEnv("LAVALINK_PASSWORD"); // you already set this in /opt/lavalink/application.yml
+  const auth = mustEnv("LAVALINK_PASSWORD");
 
-  const Nodes: NodeOption[] = [
+  const nodes: NodeOption[] = [
     {
       name: "local",
       url: `${host}:${port}`,
@@ -29,8 +29,7 @@ export function initShoukaku(client: Client) {
     },
   ];
 
-  shoukaku = new Shoukaku(new Connectors.DiscordJS(client), Nodes, {
-    // v4 option name is "resume"
+  shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
     resume: true,
     resumeTimeout: 60,
     reconnectTries: 5,
@@ -66,16 +65,22 @@ export async function ensurePlayer(opts: {
   const s = getShoukaku();
 
   const existing = players.get(opts.guildId);
-  if (existing) {
-    // If we already have a player but it’s in another channel, hard reset it.
-    if (existing.channelId !== opts.channelId) {
-      try {
-        s.leaveVoiceChannel(opts.guildId);
-      } catch {}
-      players.delete(opts.guildId);
-    } else {
-      return existing;
-    }
+  const existingConn = s.connections.get(opts.guildId) as any | undefined;
+  const existingChannelId: string | undefined = existingConn?.channelId;
+
+  // If we have a player and it’s in a different VC, hard reset.
+  if (existing && existingChannelId && existingChannelId !== opts.channelId) {
+    try {
+      s.leaveVoiceChannel(opts.guildId);
+    } catch {}
+    players.delete(opts.guildId);
+  } else if (existing && existingChannelId === opts.channelId) {
+    return existing;
+  } else if (existingConn && !existing) {
+    // stale connection with no player
+    try {
+      s.leaveVoiceChannel(opts.guildId);
+    } catch {}
   }
 
   const player = await s.joinVoiceChannel({
