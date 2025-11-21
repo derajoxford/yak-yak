@@ -1,5 +1,5 @@
 // src/music/shoukaku.ts
-import { Shoukaku, Connectors, type NodeOption, type Player } from "shoukaku";
+import { Shoukaku, Connectors, type NodeOption } from "shoukaku";
 import type { Client } from "discord.js";
 
 let shoukaku: Shoukaku | null = null;
@@ -25,7 +25,6 @@ function buildNodes(): NodeOption[] {
   ];
 }
 
-// src/index.ts expects initShoukaku()
 export function initShoukaku(client: Client): Shoukaku {
   if (shoukaku) return shoukaku;
 
@@ -42,17 +41,14 @@ export function initShoukaku(client: Client): Shoukaku {
   shoukaku.on("ready", (name: string) => {
     console.log(`[MUSIC] Lavalink node ready: ${name}`);
   });
-
   shoukaku.on("error", (name: string, err: unknown) => {
     console.error(`[MUSIC] Lavalink node error: ${name}`, err);
   });
-
   shoukaku.on("close", (name: string, code: number, reason: string) => {
     console.warn(
       `[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`,
     );
   });
-
   shoukaku.on("reconnecting", (name: string) => {
     console.warn(`[MUSIC] Lavalink node reconnecting: ${name}`);
   });
@@ -65,16 +61,40 @@ export function getShoukaku(): Shoukaku {
   return shoukaku;
 }
 
+// force self mute/deafen OFF if the runtime exposes connection
+function forceUnmute(player: any) {
+  try {
+    const conn = player?.connection;
+    if (conn?.setMute) conn.setMute(false);
+    if (conn?.setDeaf) conn.setDeaf(false);
+  } catch {}
+}
+
 export async function joinOrGetPlayer(
   client: Client,
   guildId: string,
   channelId: string,
-): Promise<Player> {
+) {
   const s = shoukaku ?? initShoukaku(client);
 
-  // ✅ If already connected in this guild, reuse it.
-  const existing = s.players.get(guildId);
-  if (existing) return existing;
+  const existing = s.players.get(guildId) as any | undefined;
+  if (existing) {
+    // If already connected somewhere else, hard leave then rejoin
+    const existingChannelId =
+      existing?.connection?.channelId ??
+      existing?.channelId ??
+      null;
+
+    if (existingChannelId && existingChannelId !== channelId) {
+      try {
+        await s.leaveVoiceChannel(guildId);
+      } catch {}
+    } else {
+      // same channel: just make sure we're not muted/deafened
+      forceUnmute(existing);
+      return existing;
+    }
+  }
 
   const shardId = client.guilds.cache.get(guildId)?.shardId ?? 0;
 
@@ -86,12 +106,16 @@ export async function joinOrGetPlayer(
       deaf: false,
       mute: false,
     });
+    forceUnmute(player as any);
     return player;
   } catch (err: any) {
     const msg = String(err?.message ?? err);
     if (msg.includes("already have an existing connection")) {
-      const again = s.players.get(guildId);
-      if (again) return again;
+      const again = s.players.get(guildId) as any | undefined;
+      if (again) {
+        forceUnmute(again);
+        return again;
+      }
     }
     throw err;
   }
