@@ -5,7 +5,6 @@ import {
   Connectors,
   type NodeOption,
   type ShoukakuOptions,
-  type LavalinkPlayerVoiceOptions,
   type Player,
 } from "shoukaku";
 
@@ -30,16 +29,17 @@ export function initShoukaku(client: Client): Shoukaku {
     },
   ];
 
+  // Shoukaku v4 option names
   const options: ShoukakuOptions = {
     moveOnDisconnect: false,
-    resumable: true,
-    resumableTimeout: 60,
+    resume: true,
+    resumeTimeout: 60,
     reconnectTries: 5,
     reconnectInterval: 5,
     restTimeout: 10_000,
   };
 
-  // IMPORTANT: Shoukaku must be created BEFORE client.login()
+  // IMPORTANT: create before client.login()
   shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, options);
 
   shoukaku.on("ready", (name: string) => {
@@ -72,6 +72,14 @@ export function getShoukaku(): Shoukaku {
   return shoukaku;
 }
 
+type VoiceChannelOptions = {
+  guildId: string;
+  channelId: string;
+  shardId: number;
+  deaf?: boolean;
+  mute?: boolean;
+};
+
 export async function joinPlayer(
   client: Client,
   channel: VoiceBasedChannel,
@@ -85,25 +93,15 @@ export async function joinPlayer(
     (channel.guild as any).shardId ??
     (client.shard?.ids?.[0] ?? 0);
 
-  const opts: LavalinkPlayerVoiceOptions = {
+  const opts: VoiceChannelOptions = {
     guildId,
     channelId,
     shardId,
     deaf: true,
   };
 
-  const joinOnce = () => s.joinVoiceChannel(opts);
-
-  try {
-    return await joinOnce();
-  } catch (err: unknown) {
-    const msg = String((err as any)?.message ?? err);
-    if (msg.toLowerCase().includes("missing session id")) {
-      await new Promise((r) => setTimeout(r, 750));
-      return await joinOnce();
-    }
-    throw err;
-  }
+  // Shoukaku v4 accepts these keys; TS types are off in d.ts
+  return await s.joinVoiceChannel(opts as any);
 }
 
 export async function leavePlayer(guildId: string): Promise<void> {
