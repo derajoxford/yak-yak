@@ -15,6 +15,9 @@ export const data = new SlashCommandBuilder()
   .setName("music")
   .setDescription("Play music in voice channels (Lavalink).")
   .addSubcommand((s) =>
+    s.setName("join").setDescription("Join your current voice channel"),
+  )
+  .addSubcommand((s) =>
     s
       .setName("play")
       .setDescription("Play or queue a track")
@@ -129,10 +132,21 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const sub = interaction.options.getSubcommand();
   const guildId = interaction.guildId!;
 
-  // ACK fast so Discord doesn’t time out
   await interaction.deferReply();
 
   try {
+    if (sub === "join") {
+      const player = await ensurePlayer(interaction);
+      const member = await interaction.guild!.members.fetch(interaction.user.id);
+      const voice = member.voice.channel!;
+      await interaction.editReply({
+        content: `Joined **${voice.name}**.`,
+        embeds: [nowPlayingEmbed((player.track as any) ?? null)],
+        components: [musicButtons(!!player.paused)],
+      });
+      return;
+    }
+
     if (sub === "play") {
       const query = interaction.options.getString("query", true);
       const player = await ensurePlayer(interaction);
