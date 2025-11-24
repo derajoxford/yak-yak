@@ -63,25 +63,36 @@ export async function joinOrGetPlayer(args: {
   shardId: number;
 }): Promise<Player> {
   const s = mustShoukaku();
+  const guildId = args.guildId;
 
-  const existing = s.players.get(args.guildId) as any | undefined;
+  // Shoukaku v4 stores voice connections separately from players.
+  const anyS = s as any;
 
-  // If already connected in this guild, reuse.
-  if (existing?.connection) {
-    const conn = existing.connection as any;
+  const existingPlayer = s.players.get(guildId) as any | undefined;
+  const existingConn =
+    anyS.connections?.get?.(guildId) ??
+    existingPlayer?.connection;
 
-    // Same channel? just return it.
-    if (conn?.channelId === args.channelId) {
-      return existing as Player;
+  if (existingConn) {
+    const existingChanId =
+      existingConn.channelId ??
+      existingPlayer?.connection?.channelId;
+
+    // If already in the right channel, just reuse player.
+    if (existingChanId === args.channelId && existingPlayer) {
+      return existingPlayer as Player;
     }
 
-    // Different channel -> disconnect old before rejoin.
-    try { conn.disconnect(); } catch {}
-    try { s.players.delete(args.guildId); } catch {}
+    // Otherwise hard-leave first to avoid:
+    // "This guild already have an existing connection"
+    try { anyS.leaveVoiceChannel?.(guildId); } catch {}
+    try { existingConn.disconnect?.(); } catch {}
+    try { s.players.delete(guildId); } catch {}
+    try { anyS.connections?.delete?.(guildId); } catch {}
   }
 
   return (await s.joinVoiceChannel({
-    guildId: args.guildId,
+    guildId,
     channelId: args.channelId,
     shardId: args.shardId,
     deaf: true,
@@ -90,12 +101,15 @@ export async function joinOrGetPlayer(args: {
 
 export function leavePlayer(guildId: string) {
   const s = mustShoukaku();
-  const existing = s.players.get(guildId) as any | undefined;
-  if (!existing) return;
+  const anyS = s as any;
 
-  try { existing.connection?.disconnect(); } catch {}
-  try { (s as any).leaveVoiceChannel?.(guildId); } catch {}
+  try { anyS.leaveVoiceChannel?.(guildId); } catch {}
+
+  const existingPlayer = s.players.get(guildId) as any | undefined;
+  try { existingPlayer?.connection?.disconnect?.(); } catch {}
+
   try { s.players.delete(guildId); } catch {}
+  try { anyS.connections?.delete?.(guildId); } catch {}
 }
 
 export async function resolveTracks(identifier: string): Promise<{
