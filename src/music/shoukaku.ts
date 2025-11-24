@@ -64,40 +64,38 @@ export async function joinOrGetPlayer(args: {
 }): Promise<Player> {
   const s = mustShoukaku();
 
-  // If nodes aren't ready yet, don't even try to join.
-  if (!s.getIdealNode()) {
-    throw new Error("Lavalink not ready yet (no connected nodes).");
-  }
+  const existing = s.players.get(args.guildId) as any | undefined;
 
-  const existing = s.players.get(args.guildId);
-  const conn = s.connections.get(args.guildId);
+  // If already connected in this guild, reuse.
+  if (existing?.connection) {
+    const conn = existing.connection as any;
 
-  // If we already have a connection/player, reuse it.
-  // This prevents: "This guild already have an existing connection"
-  if (existing && conn) {
-    // Same VC? return player.
-    if (conn.channelId === args.channelId) return existing;
+    // Same channel? just return it.
+    if (conn?.channelId === args.channelId) {
+      return existing as Player;
+    }
 
-    // Different VC -> leave old, then rejoin new.
-    await s.leaveVoiceChannel(args.guildId).catch(() => {});
-  } else if (existing && !conn) {
-    // Stale player without a connection: drop it so we can rejoin cleanly.
+    // Different channel -> disconnect old before rejoin.
+    try { conn.disconnect(); } catch {}
     try { s.players.delete(args.guildId); } catch {}
   }
 
-  return s.joinVoiceChannel({
+  return (await s.joinVoiceChannel({
     guildId: args.guildId,
     channelId: args.channelId,
     shardId: args.shardId,
     deaf: true,
-  } as any);
+  } as any)) as Player;
 }
 
 export function leavePlayer(guildId: string) {
   const s = mustShoukaku();
-  s.leaveVoiceChannel(guildId).catch(() => {});
+  const existing = s.players.get(guildId) as any | undefined;
+  if (!existing) return;
+
+  try { existing.connection?.disconnect(); } catch {}
+  try { (s as any).leaveVoiceChannel?.(guildId); } catch {}
   try { s.players.delete(guildId); } catch {}
-  try { s.connections.delete(guildId); } catch {}
 }
 
 export async function resolveTracks(identifier: string): Promise<{
@@ -110,7 +108,6 @@ export async function resolveTracks(identifier: string): Promise<{
 
   const res: any = await node.rest.resolve(identifier);
 
-  // Lavalink v4 returns tracks in res.data (array) for searches/loads.
   const data = res?.data;
   const tracks: any[] = Array.isArray(data)
     ? data
