@@ -16,10 +16,7 @@ export function initShoukaku(client: Client) {
     (process.env.LAVALINK_SECURE || "false").toLowerCase() === "true";
   const auth = (process.env.LAVALINK_PASSWORD || "").trim();
 
-  // Guard against poisoned env like host="ws" or host="wss"
-  if (!host || host === "ws" || host === "wss") host = "127.0.0.1";
-
-  // Guard against someone stuffing a full URL into HOST by mistake
+  // If someone fed a full URL into HOST, peel it down to host/port.
   if (host.includes("://")) {
     try {
       const u = new URL(host);
@@ -28,24 +25,33 @@ export function initShoukaku(client: Client) {
     } catch {}
   }
 
-  let url =
-    (process.env.LAVALINK_URL || "").trim() ||
-    `${secure ? "wss" : "ws"}://${host}:${port}`;
-
-  // Normalize URL if it's missing scheme or is literally "ws"/"wss"
-  if (!url.includes("://")) {
-    if (url === "ws" || url === "wss") {
-      url = `${secure ? "wss" : "ws"}://${host}:${port}`;
+  // If LAVALINK_URL is set, allow either "host:port" or "ws://host:port"
+  const rawUrl = (process.env.LAVALINK_URL || "").trim();
+  if (rawUrl) {
+    if (rawUrl.includes("://")) {
+      try {
+        const u = new URL(rawUrl);
+        host = u.hostname || host;
+        if (u.port) port = u.port;
+      } catch {}
     } else {
-      url = `${secure ? "wss" : "ws"}://${url}`;
+      // rawUrl like "127.0.0.1:2333"
+      const m = rawUrl.match(/^([^:]+):(\d+)$/);
+      if (m) {
+        host = m[1];
+        port = m[2];
+      }
     }
   }
 
+  // FINAL: Shoukaku v4 node.url MUST be "host:port" (no ws://)
+  const nodeUrl = `${host}:${port}`;
+
   console.log(
-    `[MUSIC] Lavalink config host=${host} port=${port} secure=${secure} url=${url}`,
+    `[MUSIC] Lavalink config host=${host} port=${port} secure=${secure} nodeUrl=${nodeUrl}`,
   );
 
-  const nodes = [{ name: "local", url, auth }];
+  const nodes = [{ name: "local", url: nodeUrl, auth, secure }];
 
   s = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
     resume: true,
@@ -56,7 +62,7 @@ export function initShoukaku(client: Client) {
   });
 
   s.on("ready", (name) =>
-    console.log(`[MUSIC] Lavalink node ready: ${name} url=${url}`),
+    console.log(`[MUSIC] Lavalink node ready: ${name} url=${nodeUrl}`),
   );
   s.on("error", (name, error) =>
     console.error(`[MUSIC] Lavalink node error: ${name}`, error),
