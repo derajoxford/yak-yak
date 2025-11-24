@@ -38,19 +38,11 @@ async function playNext(guildId: string, player: Player) {
   const next = queue.shift();
 
   if (!next) {
-    await (player as any).stopTrack?.().catch(() => {});
+    await player.playTrack({ track: { encoded: null } }).catch(() => {});
     return;
   }
 
-  try {
-    await player.playTrack({ track: { encoded: next.encoded } });
-  } catch (err) {
-    console.error("[MUSIC_PLAY_ERR] playTrack failed:", next.title, err);
-    // Try to move on instead of dying
-    await playNext(guildId, player).catch(() => {});
-    return;
-  }
-
+  await player.playTrack({ track: { encoded: next.encoded } });
   await player.setGlobalVolume(100).catch(() => {});
 }
 
@@ -59,31 +51,19 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
-  const onEnd = async (ev: any) => {
+  // ✅ Correct Shoukaku v4 events: end/exception/stuck (not TrackEndEvent). :contentReference[oaicite:3]{index=3}
+  pAny.on("end", async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
     await playNext(guildId, player).catch(() => {});
-  };
-  const onException = async (ev: any) => {
-    console.error("[MUSIC] Track exception:", ev?.exception ?? ev);
+  });
+
+  pAny.on("exception", async () => {
     await playNext(guildId, player).catch(() => {});
-  };
-  const onStuck = async (ev: any) => {
-    console.warn("[MUSIC] Track stuck:", ev);
+  });
+
+  pAny.on("stuck", async () => {
     await playNext(guildId, player).catch(() => {});
-  };
-
-  // Listen to multiple possible keys so we don't miss events
-  pAny.on("end", onEnd);
-  pAny.on("TrackEndEvent", onEnd);
-  pAny.on("trackEnd", onEnd);
-
-  pAny.on("exception", onException);
-  pAny.on("TrackExceptionEvent", onException);
-  pAny.on("trackException", onException);
-
-  pAny.on("stuck", onStuck);
-  pAny.on("TrackStuckEvent", onStuck);
-  pAny.on("trackStuck", onStuck);
+  });
 }
 
 function nowEmbed(player: Player) {
@@ -164,7 +144,6 @@ export async function execute(
   }
 
   const shardId = guild.shardId ?? 0;
-
   const sub = interaction.options.getSubcommand(true);
   const member = await guild.members.fetch(interaction.user.id);
   const vc = member.voice.channel;
@@ -200,7 +179,7 @@ export async function execute(
     }
 
     if (sub === "leave") {
-      await leavePlayer(interaction.guildId!);
+      leavePlayer(interaction.guildId!);
       queues.delete(interaction.guildId!);
       await interaction.reply({
         content: "👋 Left voice and cleared queue.",
@@ -214,22 +193,12 @@ export async function execute(
       if (!player) return;
 
       const query = interaction.options.getString("query", true).trim();
-      const identifier = /^https?:\/\//i.test(query)
-        ? query
-        : `ytsearch:${query}`;
+      const isUrl = /^https?:\/\//i.test(query);
 
-      let tracks: any[] = [];
-      try {
-        const res = await resolveTracks(identifier);
-        tracks = res.tracks ?? [];
-      } catch (err) {
-        await interaction.reply({
-          content:
-            "❌ Lavalink couldn’t resolve that query. Check Lavalink logs — YouTube sources often fail without the youtube-source/LavaSrc plugin.",
-          ephemeral: true,
-        });
-        return;
-      }
+      // ✅ Use YouTube Music search for text queries (less login-gated). :contentReference[oaicite:4]{index=4}
+      const identifier = isUrl ? query : `ytmsearch:${query}`;
+
+      const { tracks, loadType } = await resolveTracks(identifier);
 
       if (!tracks.length) {
         await interaction.reply({
@@ -241,7 +210,11 @@ export async function execute(
 
       const queue = q(interaction.guildId!);
 
-      for (const t of tracks as any[]) {
+      // ✅ If it's a playlist URL, enqueue all.
+      // ✅ If it's a search, enqueue only FIRST result.
+      const toAdd = loadType === "playlist" ? tracks : tracks.slice(0, 1);
+
+      for (const t of toAdd as any[]) {
         queue.push({
           encoded: t.encoded,
           title: t.info?.title ?? "track",
@@ -258,9 +231,9 @@ export async function execute(
         await playNext(interaction.guildId!, player);
       }
 
-      const firstTitle = (tracks as any[])[0]?.info?.title ?? "track";
+      const firstTitle = (toAdd as any[])[0]?.info?.title ?? "track";
       await interaction.reply({
-        content: `✅ Queued **${firstTitle}** — ${tracks.length} track(s).`,
+        content: `✅ Queued **${firstTitle}** — ${toAdd.length} track(s).`,
         ephemeral: true,
       });
       return;
@@ -294,7 +267,7 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
       q(interaction.guildId!).length = 0;
-      await (player as any).stopTrack?.().catch(() => {});
+      await player.playTrack({ track: { encoded: null } }).catch(() => {});
       await interaction.reply({
         content: "⏹️ Stopped and cleared queue.",
         ephemeral: true,
@@ -353,7 +326,6 @@ export async function execute(
   }
 }
 
-// Button router used by src/index.ts
 export async function handleMusicButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -375,7 +347,7 @@ export async function handleMusicButton(
   const player = await joinOrGetPlayer({
     guildId,
     channelId: vc.id,
-    shardId: guild.shardId ?? 0, // FIX: never pass undefined
+    shardId: guild.shardId,
   });
   attachOnce(guildId, player);
 
@@ -394,11 +366,11 @@ export async function handleMusicButton(
       return;
     case "stop":
       q(guildId).length = 0;
-      await (player as any).stopTrack?.().catch(() => {});
+      await player.playTrack({ track: { encoded: null } }).catch(() => {});
       await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
       return;
     case "leave":
-      await leavePlayer(guildId);
+      leavePlayer(guildId);
       queues.delete(guildId);
       await interaction.reply({ content: "👋 Left voice.", ephemeral: true });
       return;
