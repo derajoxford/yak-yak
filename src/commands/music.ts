@@ -90,16 +90,29 @@ function nowEmbed(player: Player) {
   return embed;
 }
 
+function buildIdentifier(raw: string): string {
+  const q = raw.trim();
+
+  // If user passed a direct URL, let Lavalink decide the source.
+  if (/^https?:\/\//i.test(q)) return q;
+
+  // If user explicitly picked a search platform, respect it.
+  if (/^(ytsearch|ytmsearch|scsearch):/i.test(q)) return q;
+
+  // DEFAULT: SoundCloud search
+  return `scsearch:${q}`;
+}
+
 export const data = new SlashCommandBuilder()
   .setName("music")
-  .setDescription("Play music via Lavalink")
+  .setDescription("Play music via Lavalink (defaults to SoundCloud search)")
   .addSubcommand((sc) =>
     sc.setName("join").setDescription("Join your voice channel"),
   )
   .addSubcommand((sc) =>
     sc
       .setName("play")
-      .setDescription("Search or play a URL")
+      .setDescription("Search or play a URL (default: SoundCloud)")
       .addStringOption((o) =>
         o.setName("query").setDescription("Song or URL").setRequired(true),
       ),
@@ -143,7 +156,6 @@ export async function execute(
   }
 
   const shardId = guild.shardId ?? 0;
-
   const sub = interaction.options.getSubcommand(true);
   const member = await guild.members.fetch(interaction.user.id);
   const vc = member.voice.channel;
@@ -192,12 +204,8 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
 
-      const query = interaction.options.getString("query", true).trim();
-
-      // IMPORTANT: use ytsearch (not ytmsearch). ytmsearch is way more prone to "login required".
-      const identifier = /^https?:\/\//i.test(query)
-        ? query
-        : `ytsearch:${query}`;
+      const raw = interaction.options.getString("query", true);
+      const identifier = buildIdentifier(raw);
 
       const { tracks, loadType } = await resolveTracks(identifier);
 
@@ -209,17 +217,13 @@ export async function execute(
         return;
       }
 
+      // For searches, queue only the first result.
+      const toQueue =
+        loadType === "search" ? tracks.slice(0, 1) : tracks;
+
       const queue = q(interaction.guildId!);
 
-      // If this is a SEARCH result, only queue the first track.
-      const isSearch =
-        /search/i.test(loadType) ||
-        identifier.startsWith("ytsearch:") ||
-        identifier.startsWith("ytmsearch:");
-
-      const picked = isSearch ? [tracks[0]] : tracks;
-
-      for (const t of picked as any[]) {
+      for (const t of toQueue as any[]) {
         queue.push({
           encoded: t.encoded,
           title: t.info?.title ?? "track",
@@ -236,9 +240,9 @@ export async function execute(
         await playNext(interaction.guildId!, player);
       }
 
-      const firstTitle = (picked as any[])[0]?.info?.title ?? "track";
+      const firstTitle = (toQueue as any[])[0]?.info?.title ?? "track";
       await interaction.reply({
-        content: `✅ Queued **${firstTitle}** — ${picked.length} track(s).`,
+        content: `✅ Queued **${firstTitle}** — ${toQueue.length} track(s).`,
         ephemeral: true,
       });
       return;
