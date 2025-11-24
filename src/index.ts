@@ -145,6 +145,13 @@ const client = new Client({
   ],
 });
 
+// IMPORTANT: init BEFORE login so the connector gets voice packets. :contentReference[oaicite:4]{index=4}
+try {
+  initShoukaku(client);
+} catch (err) {
+  console.error("[MUSIC] init failed:", err);
+}
+
 // Afterdark keyword responder (NSFW keyword -> programmed response)
 installAfterdarkKeywordListener(client);
 
@@ -160,14 +167,6 @@ client.once(Events.ClientReady, (c) => {
       (ACTIVITY_COOLDOWN_MS / 1000 / 60).toFixed(1)
     }m), daily cap: ${ACTIVITY_DAILY_CAP}`,
   );
-
-  // ---- START LAVALINK/SHOUKAKU ----
-  try {
-    initShoukaku(client);
-    console.log("[MUSIC] Shoukaku initialized");
-  } catch (err) {
-    console.error("[MUSIC] initShoukaku failed:", err);
-  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -268,7 +267,9 @@ client.on(Events.MessageCreate, async (message) => {
       const gif = pickTriggerGif(message.guildId, positive);
 
       const embed = new EmbedBuilder()
-        .setTitle(positive ? "Social Credit Awarded" : "Social Credit Deducted")
+        .setTitle(
+          positive ? "Social Credit Awarded" : "Social Credit Deducted",
+        )
         .setDescription(
           `${message.author} triggered **"${trig.phrase}"**.\nDelta: **${
             trig.delta > 0 ? `+${trig.delta}` : trig.delta
