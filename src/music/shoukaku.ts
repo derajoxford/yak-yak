@@ -57,6 +57,17 @@ export function initShoukaku(client: Client) {
   console.log("[MUSIC] Shoukaku initialized");
 }
 
+async function waitForNode(timeoutMs = 15000) {
+  const s = mustShoukaku();
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const node = s.getIdealNode();
+    if (node) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error("No Lavalink nodes available (timed out waiting for node).");
+}
+
 export async function joinOrGetPlayer(args: {
   guildId: string;
   channelId: string;
@@ -64,20 +75,30 @@ export async function joinOrGetPlayer(args: {
 }): Promise<Player> {
   const s = mustShoukaku();
 
+  await waitForNode();
+
   const existing = s.players.get(args.guildId) as Player | undefined;
 
-  // If we already have a player, reuse it.
-  if (existing) {
-    return existing;
+  if (existing?.connection) {
+    const connAny = existing.connection as any;
+    const sameChannel = connAny.channelId === args.channelId;
+    const disconnected =
+      connAny.state === "DISCONNECTED" || connAny.state === 0;
+
+    if (sameChannel && !disconnected) {
+      return existing;
+    }
+
+    try { connAny.disconnect(); } catch {}
+    try { await s.leaveVoiceChannel(args.guildId); } catch {}
+    try { s.players.delete(args.guildId); } catch {}
   }
 
-  // Join fresh. Set deaf=false so bot doesn't look "defened".
   return s.joinVoiceChannel({
     guildId: args.guildId,
     channelId: args.channelId,
     shardId: args.shardId,
-    deaf: false,
-    mute: false,
+    deaf: true,
   } as any);
 }
 
@@ -86,12 +107,9 @@ export function leavePlayer(guildId: string) {
   const existing = s.players.get(guildId) as Player | undefined;
   if (!existing) return;
 
-  try {
-    (existing as any).connection?.disconnect();
-  } catch {}
-  try {
-    s.players.delete(guildId);
-  } catch {}
+  try { (existing.connection as any)?.disconnect(); } catch {}
+  s.leaveVoiceChannel(guildId).catch(() => {});
+  try { s.players.delete(guildId); } catch {}
 }
 
 export async function resolveTracks(identifier: string): Promise<{
