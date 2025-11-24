@@ -12,9 +12,6 @@ function mustShoukaku(): Shoukaku {
 }
 
 export function initShoukaku(client: Client) {
-  // Guard against double init
-  if (shoukaku) return shoukaku;
-
   const host = process.env.LAVALINK_HOST || "127.0.0.1";
   const port = Number(process.env.LAVALINK_PORT || 2333);
   const secure = /^true$/i.test(process.env.LAVALINK_SECURE || "false");
@@ -58,19 +55,6 @@ export function initShoukaku(client: Client) {
   });
 
   console.log("[MUSIC] Shoukaku initialized");
-  return shoukaku;
-}
-
-function getUsableNode() {
-  const s = mustShoukaku();
-  const ideal = s.getIdealNode();
-  if (ideal) return ideal;
-
-  // fallback to named node if ideal is null for any reason
-  const local = (s as any).nodes?.get?.("local");
-  if (local) return local;
-
-  throw new Error("No Lavalink nodes available (ideal/local both missing).");
 }
 
 export async function joinOrGetPlayer(args: {
@@ -82,41 +66,28 @@ export async function joinOrGetPlayer(args: {
 
   const existing = s.players.get(args.guildId) as Player | undefined;
 
+  // If we already have a player, reuse it.
   if (existing) {
-    const conn = (existing as any).connection;
-
-    // If connection exists and already in this VC, reuse
-    if (conn?.channelId === args.channelId) {
-      return existing;
-    }
-
-    // Otherwise: always try a clean leave before rejoin
-    try {
-      conn?.disconnect();
-    } catch {}
-    try {
-      await s.leaveVoiceChannel(args.guildId);
-    } catch {}
+    return existing;
   }
 
+  // Join fresh. Set deaf=false so bot doesn't look "defened".
   return s.joinVoiceChannel({
     guildId: args.guildId,
     channelId: args.channelId,
     shardId: args.shardId,
-    deaf: true,
+    deaf: false,
+    mute: false,
   } as any);
 }
 
-export async function leavePlayer(guildId: string) {
+export function leavePlayer(guildId: string) {
   const s = mustShoukaku();
   const existing = s.players.get(guildId) as Player | undefined;
   if (!existing) return;
 
   try {
     (existing as any).connection?.disconnect();
-  } catch {}
-  try {
-    await s.leaveVoiceChannel(guildId);
   } catch {}
   try {
     s.players.delete(guildId);
@@ -127,15 +98,11 @@ export async function resolveTracks(identifier: string): Promise<{
   tracks: any[];
   loadType: string;
 }> {
-  const node = getUsableNode();
+  const s = mustShoukaku();
+  const node = s.getIdealNode();
+  if (!node) throw new Error("No Lavalink nodes available.");
 
-  let res: any;
-  try {
-    res = await node.rest.resolve(identifier);
-  } catch (err) {
-    console.error("[MUSIC_RESOLVE_ERR] rest.resolve failed:", identifier, err);
-    throw err;
-  }
+  const res: any = await node.rest.resolve(identifier);
 
   const data = res?.data;
   const tracks: any[] = Array.isArray(data)
