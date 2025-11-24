@@ -22,6 +22,10 @@ type QueueItem = {
   requesterId: string;
 };
 
+// How many search results to queue for text searches.
+// Lets us auto-skip gated youtube results until we hit a playable one.
+const SEARCH_RESULTS_TO_QUEUE = 5;
+
 const queues = new Map<string, QueueItem[]>();
 
 function q(guildId: string): QueueItem[] {
@@ -51,17 +55,67 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
-  // ✅ Correct Shoukaku v4 events: end/exception/stuck (not TrackEndEvent). :contentReference[oaicite:3]{index=3}
+  async function trySoundcloudFallback(): Promise<boolean> {
+    if (pAny.__yak_fallback_inflight) return false;
+    if (pAny.__yak_fallback_tried) return false;
+
+    const lastQuery: string | undefined = pAny.__yak_last_search;
+    if (!lastQuery) return false;
+
+    pAny.__yak_fallback_tried = true;
+    pAny.__yak_fallback_inflight = true;
+
+    try {
+      const { tracks } = await resolveTracks(`scsearch:${lastQuery}`);
+      if (!tracks.length) return false;
+
+      const t: any = tracks[0];
+      q(guildId).push({
+        encoded: t.encoded,
+        title: t.info?.title ?? "track",
+        uri: t.info?.uri ?? "",
+        length: t.info?.length ?? 0,
+        author: t.info?.author,
+        thumbnail: t.info?.artworkUrl,
+        requesterId: pAny.__yak_last_requester ?? "unknown",
+      });
+
+      console.log(`[MUSIC] Fallback queued from SoundCloud for: ${lastQuery}`);
+      return true;
+    } catch (e) {
+      console.warn("[MUSIC] SoundCloud fallback failed:", e);
+      return false;
+    } finally {
+      pAny.__yak_fallback_inflight = false;
+    }
+  }
+
+  // ✅ Shoukaku v4 events. :contentReference[oaicite:2]{index=2}
   pAny.on("end", async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
     await playNext(guildId, player).catch(() => {});
   });
 
-  pAny.on("exception", async () => {
+  pAny.on("stuck", async () => {
     await playNext(guildId, player).catch(() => {});
   });
 
-  pAny.on("stuck", async () => {
+  pAny.on("exception", async (ev: any) => {
+    const msg =
+      ev?.exception?.message ||
+      ev?.message ||
+      "Track exception (unknown)";
+    console.warn("[MUSIC] Track exception:", msg);
+
+    // If YouTube blocks the track and queue is empty, auto-fallback.
+    if (q(guildId).length === 0) {
+      const ok = await trySoundcloudFallback();
+      if (ok) {
+        await playNext(guildId, player).catch(() => {});
+        return;
+      }
+    }
+
     await playNext(guildId, player).catch(() => {});
   });
 }
@@ -112,7 +166,9 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sc) =>
     sc.setName("resume").setDescription("Resume playback"),
   )
-  .addSubcommand((sc) => sc.setName("stop").setDescription("Stop and clear queue"))
+  .addSubcommand((sc) =>
+    sc.setName("stop").setDescription("Stop and clear queue"),
+  )
   .addSubcommand((sc) =>
     sc
       .setName("volume")
@@ -195,7 +251,7 @@ export async function execute(
       const query = interaction.options.getString("query", true).trim();
       const isUrl = /^https?:\/\//i.test(query);
 
-      // ✅ Use YouTube Music search for text queries (less login-gated). :contentReference[oaicite:4]{index=4}
+      // Text searches use YouTube Music search; URLs play directly.
       const identifier = isUrl ? query : `ytmsearch:${query}`;
 
       const { tracks, loadType } = await resolveTracks(identifier);
@@ -208,11 +264,29 @@ export async function execute(
         return;
       }
 
-      const queue = q(interaction.guildId!);
+      const ltLower = String(loadType ?? "").toLowerCase();
+      const playlistLoaded = ltLower.includes("playlist");
 
-      // ✅ If it's a playlist URL, enqueue all.
-      // ✅ If it's a search, enqueue only FIRST result.
-      const toAdd = loadType === "playlist" ? tracks : tracks.slice(0, 1);
+      let toAdd: any[] = [];
+
+      if (playlistLoaded && isUrl) {
+        // Playlist URL -> add all
+        toAdd = tracks;
+      } else if (isUrl) {
+        // Single URL -> add just first
+        toAdd = tracks.slice(0, 1);
+      } else {
+        // Text search -> add top N results so we can skip gated ones
+        toAdd = tracks.slice(0, SEARCH_RESULTS_TO_QUEUE);
+
+        // store for fallback
+        const pAny = player as any;
+        pAny.__yak_last_search = query;
+        pAny.__yak_last_requester = interaction.user.id;
+        pAny.__yak_fallback_tried = false;
+      }
+
+      const queue = q(interaction.guildId!);
 
       for (const t of toAdd as any[]) {
         queue.push({
@@ -326,6 +400,7 @@ export async function execute(
   }
 }
 
+// Button router used by src/index.ts
 export async function handleMusicButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
