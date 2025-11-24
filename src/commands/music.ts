@@ -38,13 +38,19 @@ async function playNext(guildId: string, player: Player) {
   const next = queue.shift();
 
   if (!next) {
-    // v4 clean stop
     await (player as any).stopTrack?.().catch(() => {});
     return;
   }
 
-  // Shoukaku v4 expects { track: { encoded } } :contentReference[oaicite:5]{index=5}
-  await player.playTrack({ track: { encoded: next.encoded } });
+  try {
+    await player.playTrack({ track: { encoded: next.encoded } });
+  } catch (err) {
+    console.error("[MUSIC_PLAY_ERR] playTrack failed:", next.title, err);
+    // Try to move on instead of dying
+    await playNext(guildId, player).catch(() => {});
+    return;
+  }
+
   await player.setGlobalVolume(100).catch(() => {});
 }
 
@@ -53,21 +59,31 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
-  // Shoukaku v4 player event keys are: end, exception, stuck, start, closed :contentReference[oaicite:6]{index=6}
-  pAny.on("end", async (ev: any) => {
+  const onEnd = async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
     await playNext(guildId, player).catch(() => {});
-  });
-
-  pAny.on("exception", async (ev: any) => {
+  };
+  const onException = async (ev: any) => {
     console.error("[MUSIC] Track exception:", ev?.exception ?? ev);
     await playNext(guildId, player).catch(() => {});
-  });
-
-  pAny.on("stuck", async (ev: any) => {
+  };
+  const onStuck = async (ev: any) => {
     console.warn("[MUSIC] Track stuck:", ev);
     await playNext(guildId, player).catch(() => {});
-  });
+  };
+
+  // Listen to multiple possible keys so we don't miss events
+  pAny.on("end", onEnd);
+  pAny.on("TrackEndEvent", onEnd);
+  pAny.on("trackEnd", onEnd);
+
+  pAny.on("exception", onException);
+  pAny.on("TrackExceptionEvent", onException);
+  pAny.on("trackException", onException);
+
+  pAny.on("stuck", onStuck);
+  pAny.on("TrackStuckEvent", onStuck);
+  pAny.on("trackStuck", onStuck);
 }
 
 function nowEmbed(player: Player) {
@@ -202,7 +218,18 @@ export async function execute(
         ? query
         : `ytsearch:${query}`;
 
-      const { tracks } = await resolveTracks(identifier);
+      let tracks: any[] = [];
+      try {
+        const res = await resolveTracks(identifier);
+        tracks = res.tracks ?? [];
+      } catch (err) {
+        await interaction.reply({
+          content:
+            "❌ Lavalink couldn’t resolve that query. Check Lavalink logs — YouTube sources often fail without the youtube-source/LavaSrc plugin.",
+          ephemeral: true,
+        });
+        return;
+      }
 
       if (!tracks.length) {
         await interaction.reply({
@@ -348,7 +375,7 @@ export async function handleMusicButton(
   const player = await joinOrGetPlayer({
     guildId,
     channelId: vc.id,
-    shardId: guild.shardId,
+    shardId: guild.shardId ?? 0, // FIX: never pass undefined
   });
   attachOnce(guildId, player);
 
