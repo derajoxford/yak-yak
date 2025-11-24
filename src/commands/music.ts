@@ -8,7 +8,7 @@ import {
 import { type Player } from "shoukaku";
 import {
   joinOrGetPlayer,
-  leaveGuild,
+  leavePlayer,
   resolveTracks,
 } from "../music/shoukaku.js";
 
@@ -43,7 +43,7 @@ async function playNext(guildId: string, player: Player) {
   }
 
   await player.playTrack({ track: { encoded: next.encoded } });
-  await player.setGlobalVolume(100).catch(() => {});
+  await (player as any).setGlobalVolume?.(100).catch(() => {});
 }
 
 function attachOnce(guildId: string, player: Player) {
@@ -51,8 +51,6 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
-  // Shoukaku v4 typings don't expose these string event keys.
-  // We cast to any to silence TS and keep runtime correct.
   pAny.on("TrackEndEvent", async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
     await playNext(guildId, player).catch(() => {});
@@ -78,7 +76,7 @@ function nowEmbed(player: Player) {
 
   const info = cur.info ?? {};
   embed.setDescription(
-    `**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`
+    `**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`,
   );
 
   if (info.uri) embed.addFields({ name: "Link", value: info.uri });
@@ -106,15 +104,9 @@ export const data = new SlashCommandBuilder()
         o.setName("query").setDescription("Song or URL").setRequired(true),
       ),
   )
-  .addSubcommand((sc) =>
-    sc.setName("skip").setDescription("Skip current track"),
-  )
-  .addSubcommand((sc) =>
-    sc.setName("pause").setDescription("Pause playback"),
-  )
-  .addSubcommand((sc) =>
-    sc.setName("resume").setDescription("Resume playback"),
-  )
+  .addSubcommand((sc) => sc.setName("skip").setDescription("Skip current track"))
+  .addSubcommand((sc) => sc.setName("pause").setDescription("Pause playback"))
+  .addSubcommand((sc) => sc.setName("resume").setDescription("Resume playback"))
   .addSubcommand((sc) =>
     sc.setName("stop").setDescription("Stop and clear queue"),
   )
@@ -131,12 +123,8 @@ export const data = new SlashCommandBuilder()
           .setRequired(true),
       ),
   )
-  .addSubcommand((sc) =>
-    sc.setName("now").setDescription("Show now playing"),
-  )
-  .addSubcommand((sc) =>
-    sc.setName("queue").setDescription("Show queue"),
-  )
+  .addSubcommand((sc) => sc.setName("now").setDescription("Show now playing"))
+  .addSubcommand((sc) => sc.setName("queue").setDescription("Show queue"))
   .addSubcommand((sc) =>
     sc.setName("leave").setDescription("Leave voice and clear queue"),
   );
@@ -163,7 +151,7 @@ export async function execute(
       return null;
     }
 
-    const shardId = guild?.shardId ?? 0;
+    const shardId = guild.shardId ?? 0;
 
     const player = await joinOrGetPlayer({
       guildId: interaction.guildId!,
@@ -187,7 +175,7 @@ export async function execute(
     }
 
     if (sub === "leave") {
-      await leaveGuild(interaction.guildId!);
+      leavePlayer(interaction.guildId!);
       queues.delete(interaction.guildId!);
       await interaction.reply({
         content: "👋 Left voice and cleared queue.",
@@ -205,8 +193,7 @@ export async function execute(
         ? query
         : `ytsearch:${query}`;
 
-      const res = await resolveTracks(identifier);
-      const tracks: any[] = (res as any)?.tracks ?? [];
+      const { tracks } = await resolveTracks(identifier);
 
       if (!tracks.length) {
         await interaction.reply({
@@ -218,7 +205,7 @@ export async function execute(
 
       const queue = q(interaction.guildId!);
 
-      for (const t of tracks) {
+      for (const t of tracks as any[]) {
         queue.push({
           encoded: t.encoded,
           title: t.info?.title ?? "track",
@@ -235,7 +222,7 @@ export async function execute(
         await playNext(interaction.guildId!, player);
       }
 
-      const firstTitle = tracks[0]?.info?.title ?? "track";
+      const firstTitle = (tracks as any[])[0]?.info?.title ?? "track";
       await interaction.reply({
         content: `✅ Queued **${firstTitle}** — ${tracks.length} track(s).`,
         ephemeral: true,
@@ -283,7 +270,7 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
       const amount = interaction.options.getInteger("amount", true);
-      await player.setGlobalVolume(amount).catch(() => {});
+      await (player as any).setGlobalVolume(amount).catch(() => {});
       await interaction.reply({
         content: `🔊 Volume set to ${amount}.`,
         ephemeral: true,
@@ -354,7 +341,7 @@ export async function handleMusicButton(
   const player = await joinOrGetPlayer({
     guildId,
     channelId: vc.id,
-    shardId: guild.shardId,
+    shardId: guild.shardId ?? 0,
   });
   attachOnce(guildId, player);
 
@@ -377,7 +364,7 @@ export async function handleMusicButton(
       await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
       return;
     case "leave":
-      await leaveGuild(guildId);
+      leavePlayer(guildId);
       queues.delete(guildId);
       await interaction.reply({ content: "👋 Left voice.", ephemeral: true });
       return;
