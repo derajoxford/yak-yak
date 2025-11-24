@@ -51,6 +51,8 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
+  // Shoukaku v4 typings don't expose these string event keys.
+  // We cast to any to silence TS and keep runtime correct.
   pAny.on("TrackEndEvent", async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
     await playNext(guildId, player).catch(() => {});
@@ -75,10 +77,16 @@ function nowEmbed(player: Player) {
   }
 
   const info = cur.info ?? {};
-  embed.setDescription(`**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`);
+  embed.setDescription(
+    `**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`,
+  );
 
   if (info.uri) embed.addFields({ name: "Link", value: info.uri });
-  if (info.length) embed.addFields({ name: "Length", value: `${Math.floor(info.length / 1000)}s` });
+  if (info.length)
+    embed.addFields({
+      name: "Length",
+      value: `${Math.floor(info.length / 1000)}s`,
+    });
   if (info.artworkUrl) embed.setThumbnail(info.artworkUrl);
 
   return embed;
@@ -98,18 +106,14 @@ export const data = new SlashCommandBuilder()
         o.setName("query").setDescription("Song or URL").setRequired(true),
       ),
   )
-  .addSubcommand((sc) =>
-    sc.setName("skip").setDescription("Skip current track"),
-  )
+  .addSubcommand((sc) => sc.setName("skip").setDescription("Skip current track"))
   .addSubcommand((sc) =>
     sc.setName("pause").setDescription("Pause playback"),
   )
   .addSubcommand((sc) =>
     sc.setName("resume").setDescription("Resume playback"),
   )
-  .addSubcommand((sc) =>
-    sc.setName("stop").setDescription("Stop and clear queue"),
-  )
+  .addSubcommand((sc) => sc.setName("stop").setDescription("Stop and clear queue"))
   .addSubcommand((sc) =>
     sc
       .setName("volume")
@@ -126,9 +130,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sc) =>
     sc.setName("now").setDescription("Show now playing"),
   )
-  .addSubcommand((sc) =>
-    sc.setName("queue").setDescription("Show queue"),
-  )
+  .addSubcommand((sc) => sc.setName("queue").setDescription("Show queue"))
   .addSubcommand((sc) =>
     sc.setName("leave").setDescription("Leave voice and clear queue"),
   );
@@ -142,6 +144,9 @@ export async function execute(
     return;
   }
 
+  // compute once after guard so TS knows it's non-null everywhere
+  const shardId = guild.shardId ?? 0;
+
   const sub = interaction.options.getSubcommand(true);
   const member = await guild.members.fetch(interaction.user.id);
   const vc = member.voice.channel;
@@ -154,8 +159,6 @@ export async function execute(
       });
       return null;
     }
-
-    const shardId = guild.shardId ?? 0;
 
     const player = await joinOrGetPlayer({
       guildId: interaction.guildId!,
