@@ -20,11 +20,9 @@ type QueueItem = {
   author?: string;
   thumbnail?: string;
   requesterId: string;
-  rawQuery?: string; // for fallback searches
 };
 
 const queues = new Map<string, QueueItem[]>();
-const lastSearch = new Map<string, string>(); // guildId -> last plain-text search
 
 function q(guildId: string): QueueItem[] {
   let arr = queues.get(guildId);
@@ -35,48 +33,17 @@ function q(guildId: string): QueueItem[] {
   return arr;
 }
 
-async function playTrackEncoded(player: Player, encoded: string | null) {
-  await player.playTrack({ track: { encoded } }).catch(() => {});
-  await player.setGlobalVolume(100).catch(() => {});
-}
-
-async function tryFallbackSearch(
-  guildId: string,
-  player: Player,
-  raw: string,
-): Promise<boolean> {
-  const identifiers = [
-    `ytmsearch:${raw}`,
-    `ytsearch:${raw}`,
-    `scsearch:${raw}`,
-  ];
-
-  for (const id of identifiers) {
-    try {
-      const { tracks } = await resolveTracks(id);
-      const t = tracks?.[0];
-      if (!t?.encoded) continue;
-
-      await playTrackEncoded(player, t.encoded);
-      console.log(`[MUSIC] Fallback playing from ${id}`);
-      return true;
-    } catch {
-      // keep trying next source
-    }
-  }
-  return false;
-}
-
 async function playNext(guildId: string, player: Player) {
   const queue = q(guildId);
   const next = queue.shift();
 
   if (!next) {
-    await playTrackEncoded(player, null);
+    await player.playTrack({ track: { encoded: null } }).catch(() => {});
     return;
   }
 
-  await playTrackEncoded(player, next.encoded);
+  await player.playTrack({ track: { encoded: next.encoded } });
+  await player.setGlobalVolume(100).catch(() => {});
 }
 
 function attachOnce(guildId: string, player: Player) {
@@ -84,32 +51,16 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
-  // Shoukaku v4 event names
-  pAny.on("end", async (ev: any) => {
+  pAny.on("TrackEndEvent", async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
     await playNext(guildId, player).catch(() => {});
   });
 
-  pAny.on("exception", async (ev: any) => {
-    const msg =
-      ev?.exception?.message ||
-      ev?.error?.message ||
-      ev?.message ||
-      "unknown";
-    console.warn("[MUSIC] Track exception:", msg);
-
-    if (/requires login|login|age restricted|private/i.test(msg)) {
-      const raw = lastSearch.get(guildId);
-      if (raw) {
-        const ok = await tryFallbackSearch(guildId, player, raw);
-        if (ok) return;
-      }
-    }
-
+  pAny.on("TrackExceptionEvent", async () => {
     await playNext(guildId, player).catch(() => {});
   });
 
-  pAny.on("stuck", async () => {
+  pAny.on("TrackStuckEvent", async () => {
     await playNext(guildId, player).catch(() => {});
   });
 }
@@ -192,6 +143,7 @@ export async function execute(
   }
 
   const shardId = guild.shardId ?? 0;
+
   const sub = interaction.options.getSubcommand(true);
   const member = await guild.members.fetch(interaction.user.id);
   const vc = member.voice.channel;
@@ -241,17 +193,14 @@ export async function execute(
       if (!player) return;
 
       const query = interaction.options.getString("query", true).trim();
-      const isUrl = /^https?:\/\//i.test(query);
 
-      let identifier: string;
-      if (isUrl) {
-        identifier = query;
-      } else {
-        lastSearch.set(interaction.guildId!, query);
-        identifier = `ytmsearch:${query}`;
-      }
+      // IMPORTANT: use ytsearch (not ytmsearch). ytmsearch is way more prone to "login required".
+      const identifier = /^https?:\/\//i.test(query)
+        ? query
+        : `ytsearch:${query}`;
 
-      const { tracks } = await resolveTracks(identifier);
+      const { tracks, loadType } = await resolveTracks(identifier);
+
       if (!tracks.length) {
         await interaction.reply({
           content: "❌ No tracks found.",
@@ -262,9 +211,15 @@ export async function execute(
 
       const queue = q(interaction.guildId!);
 
-      const toQueue = isUrl ? (tracks as any[]) : (tracks as any[]).slice(0, 1);
+      // If this is a SEARCH result, only queue the first track.
+      const isSearch =
+        /search/i.test(loadType) ||
+        identifier.startsWith("ytsearch:") ||
+        identifier.startsWith("ytmsearch:");
 
-      for (const t of toQueue) {
+      const picked = isSearch ? [tracks[0]] : tracks;
+
+      for (const t of picked as any[]) {
         queue.push({
           encoded: t.encoded,
           title: t.info?.title ?? "track",
@@ -273,7 +228,6 @@ export async function execute(
           author: t.info?.author,
           thumbnail: t.info?.artworkUrl,
           requesterId: interaction.user.id,
-          rawQuery: isUrl ? undefined : query,
         });
       }
 
@@ -282,9 +236,9 @@ export async function execute(
         await playNext(interaction.guildId!, player);
       }
 
-      const firstTitle = toQueue[0]?.info?.title ?? "track";
+      const firstTitle = (picked as any[])[0]?.info?.title ?? "track";
       await interaction.reply({
-        content: `✅ Queued **${firstTitle}** — ${toQueue.length} track(s).`,
+        content: `✅ Queued **${firstTitle}** — ${picked.length} track(s).`,
         ephemeral: true,
       });
       return;
@@ -318,7 +272,7 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
       q(interaction.guildId!).length = 0;
-      await playTrackEncoded(player, null);
+      await player.playTrack({ track: { encoded: null } }).catch(() => {});
       await interaction.reply({
         content: "⏹️ Stopped and cleared queue.",
         ephemeral: true,
@@ -398,7 +352,7 @@ export async function handleMusicButton(
   const player = await joinOrGetPlayer({
     guildId,
     channelId: vc.id,
-    shardId: guild.shardId,
+    shardId: guild.shardId ?? 0,
   });
   attachOnce(guildId, player);
 
@@ -417,7 +371,7 @@ export async function handleMusicButton(
       return;
     case "stop":
       q(guildId).length = 0;
-      await playTrackEncoded(player, null);
+      await player.playTrack({ track: { encoded: null } }).catch(() => {});
       await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
       return;
     case "leave":
