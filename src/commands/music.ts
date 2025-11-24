@@ -151,7 +151,8 @@ export async function execute(
       return null;
     }
 
-    const shardId = guild.shardId ?? 0;
+    // TS doesn't narrow captured vars inside closures reliably.
+    const shardId = guild!.shardId ?? 0;
 
     const player = await joinOrGetPlayer({
       guildId: interaction.guildId!,
