@@ -1,89 +1,74 @@
 // src/music/shoukaku.ts
-import { Shoukaku, Connectors, type Player } from "shoukaku";
+import { Shoukaku, Connectors, type Node, type Player } from "shoukaku";
 import type { Client } from "discord.js";
 
 let s: Shoukaku | null = null;
 
-function must() {
+// We keep our own cache so we can avoid double-joining.
+const players = new Map<string, Player>();
+
+function envBool(v: string | undefined, dflt = false) {
+  if (v == null) return dflt;
+  return v.toLowerCase() === "true" || v === "1" || v.toLowerCase() === "yes";
+}
+
+function getIdealNode(): Node {
   if (!s) throw new Error("Shoukaku not initialized");
-  return s;
+  const node = s.getIdealNode();
+  if (!node) throw new Error("No Lavalink nodes available");
+  return node;
 }
 
 export function initShoukaku(client: Client) {
-  let host = (process.env.LAVALINK_HOST || "127.0.0.1").trim();
-  let port = (process.env.LAVALINK_PORT || "2333").trim();
-  const secure =
-    (process.env.LAVALINK_SECURE || "false").toLowerCase() === "true";
-  const auth = (process.env.LAVALINK_PASSWORD || "").trim();
+  const host = process.env.LAVALINK_HOST || "127.0.0.1";
+  const port = Number(process.env.LAVALINK_PORT || "2333");
+  const secure = envBool(process.env.LAVALINK_SECURE, false);
 
-  // If someone fed a full URL into HOST, peel it down to host/port.
-  if (host.includes("://")) {
-    try {
-      const u = new URL(host);
-      host = u.hostname || "127.0.0.1";
-      if (u.port) port = u.port;
-    } catch {}
-  }
-
-  // If LAVALINK_URL is set, allow either "host:port" or "ws://host:port"
-  const rawUrl = (process.env.LAVALINK_URL || "").trim();
-  if (rawUrl) {
-    if (rawUrl.includes("://")) {
-      try {
-        const u = new URL(rawUrl);
-        host = u.hostname || host;
-        if (u.port) port = u.port;
-      } catch {}
-    } else {
-      // rawUrl like "127.0.0.1:2333"
-      const m = rawUrl.match(/^([^:]+):(\d+)$/);
-      if (m) {
-        host = m[1];
-        port = m[2];
-      }
-    }
-  }
-
-  // FINAL: Shoukaku v4 node.url MUST be "host:port" (no ws://)
-  const nodeUrl = `${host}:${port}`;
+  // IMPORTANT: Shoukaku expects "host:port" here, not "ws://..."
+  const url = `${host}:${port}`;
+  const auth = process.env.LAVALINK_PASSWORD || "";
 
   console.log(
-    `[MUSIC] Lavalink config host=${host} port=${port} secure=${secure} nodeUrl=${nodeUrl}`,
+    `[MUSIC] Lavalink config host=${host} port=${port} secure=${secure} url=${secure ? "wss" : "ws"}://${url}`,
   );
 
-  const nodes = [{ name: "local", url: nodeUrl, auth, secure }];
+  const nodes = [
+    {
+      name: "local",
+      url,
+      auth,
+      secure,
+    },
+  ];
 
-  s = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
-    resume: true,
-    resumeTimeout: 60,
-    reconnectTries: 999,
+  const connector = new Connectors.DiscordJS(client);
+
+  s = new Shoukaku(connector, nodes, {
+    reconnectTries: 10,
+    reconnectInterval: 5,
     restTimeout: 10_000,
     moveOnDisconnect: false,
   });
 
-  s.on("ready", (name) =>
-    console.log(`[MUSIC] Lavalink node ready: ${name} url=${nodeUrl}`),
-  );
-  s.on("error", (name, error) =>
-    console.error(`[MUSIC] Lavalink node error: ${name}`, error),
-  );
-  s.on("close", (name, code, reason) =>
-    console.warn(
-      `[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`,
-    ),
-  );
-  s.on("reconnecting", (name) =>
-    console.warn(`[MUSIC] Lavalink node reconnecting: ${name}`),
-  );
+  s.on("ready", (name) => {
+    console.log(`[MUSIC] Lavalink node ready: ${name} url=${url}`);
+  });
+
+  s.on("error", (name, err) => {
+    console.log(`[MUSIC] Lavalink node error: ${name}`, err);
+  });
+
+  s.on("close", (name, code, reason) => {
+    console.log(
+      `[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason ?? ""}`,
+    );
+  });
+
+  s.on("reconnecting", (name) => {
+    console.log(`[MUSIC] Lavalink node reconnecting: ${name}`);
+  });
 
   console.log("[MUSIC] Shoukaku initialized");
-}
-
-function idealNode() {
-  const sh = must();
-  const node = sh.getIdealNode();
-  if (!node) throw new Error("No Lavalink nodes available");
-  return node;
 }
 
 export async function joinOrGetPlayer(opts: {
@@ -91,69 +76,89 @@ export async function joinOrGetPlayer(opts: {
   channelId: string;
   shardId: number;
 }): Promise<Player> {
-  const sh = must();
+  if (!s) throw new Error("Shoukaku not initialized");
 
-  const existing = (sh as any).players?.get(opts.guildId) as Player | undefined;
+  const { guildId, channelId, shardId } = opts;
+
+  const existing = players.get(guildId);
   if (existing) {
-    const existingChannel =
-      (existing as any).connection?.channelId ??
-      (existing as any).channelId ??
-      (existing as any).voice?.channelId;
+    const exAny = existing as any;
 
-    if (existingChannel === opts.channelId) return existing;
+    const connected =
+      exAny?.data?.state?.connected ??
+      exAny?.state?.connected ??
+      exAny?.connection?.connected ??
+      false;
 
-    try {
-      if (typeof (existing as any).disconnect === "function") {
-        await (existing as any).disconnect();
-      } else if (typeof (existing as any).destroy === "function") {
-        await (existing as any).destroy();
+    if (connected) {
+      // If already connected, just reuse it.
+      const curChan =
+        exAny?.connection?.channelId ??
+        exAny?.channelId ??
+        exAny?.data?.channelId;
+
+      // If they moved voice channels, try to move without rejoin.
+      if (curChan && curChan !== channelId) {
+        try {
+          await exAny.moveChannel?.(channelId);
+        } catch {
+          // Fallback: destroy and rejoin.
+          try {
+            await exAny.destroy?.();
+          } catch {}
+          players.delete(guildId);
+        }
+      } else {
+        return existing;
       }
-    } catch {}
-    try {
-      (sh as any).players?.delete(opts.guildId);
-    } catch {}
+    } else {
+      // Stale player — destroy so we can rejoin cleanly.
+      try {
+        await exAny.destroy?.();
+      } catch {}
+      players.delete(guildId);
+    }
   }
 
-  const player = await sh.joinVoiceChannel({
-    guildId: opts.guildId,
-    channelId: opts.channelId,
-    shardId: opts.shardId,
+  const node = getIdealNode();
+  const player = await s.joinVoiceChannel({
+    guildId,
+    channelId,
+    shardId,
     deaf: true,
   });
 
+  // Cache it so we don't double-join next time.
+  players.set(guildId, player);
   return player;
 }
 
 export function leavePlayer(guildId: string) {
-  const sh = must();
-  const player = (sh as any).players?.get(guildId) as Player | undefined;
-  if (!player) return;
+  const player = players.get(guildId);
+  if (player) {
+    const pAny = player as any;
+    try {
+      pAny.destroy?.();
+    } catch {}
+    players.delete(guildId);
+  }
 
+  const sAny = s as any;
   try {
-    if (typeof (player as any).disconnect === "function") {
-      (player as any).disconnect();
-    } else if (typeof (player as any).destroy === "function") {
-      (player as any).destroy();
-    }
-  } catch {}
-
-  try {
-    (sh as any).players?.delete(guildId);
+    sAny?.leaveVoiceChannel?.(guildId);
   } catch {}
 }
 
-export async function resolveTracks(
-  identifier: string,
-): Promise<{ tracks: any[] }> {
-  const node = idealNode();
-  const res: any = await node.rest.resolve(identifier);
+export async function resolveTracks(identifier: string): Promise<{
+  tracks: any[];
+  loadType?: string;
+}> {
+  const node = getIdealNode();
 
-  let tracks: any[] = [];
+  const res = (await (node as any).rest.resolve(identifier)) as any;
+  if (!res) return { tracks: [], loadType: "NO_MATCHES" };
 
-  if (Array.isArray(res?.data)) tracks = res.data;
-  else if (Array.isArray(res?.tracks)) tracks = res.tracks;
-  else if (Array.isArray(res?.data?.tracks)) tracks = res.data.tracks;
-  else if (res?.data && !Array.isArray(res.data)) tracks = [res.data];
-
-  return { tracks };
+  // Lavalink v4 returns { loadType, data: [...] }.
+  const tracks = res.data ?? res.tracks ?? [];
+  return { tracks, loadType: res.loadType };
 }
