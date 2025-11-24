@@ -1,6 +1,12 @@
 // src/music/shoukaku.ts
 import { Client } from "discord.js";
-import { Shoukaku, Connectors, type NodeOption, type Player, type Node } from "shoukaku";
+import {
+  Shoukaku,
+  Connectors,
+  type NodeOption,
+  type Player,
+  type Node,
+} from "shoukaku";
 
 let shoukaku: Shoukaku | null = null;
 
@@ -14,7 +20,8 @@ export function initShoukaku(client: Client): Shoukaku {
 
   const host = process.env.LAVALINK_HOST ?? "127.0.0.1";
   const port = Number(process.env.LAVALINK_PORT ?? "2333");
-  const secure = (process.env.LAVALINK_SECURE ?? "false").toLowerCase() === "true";
+  const secure =
+    (process.env.LAVALINK_SECURE ?? "false").toLowerCase() === "true";
   const name = process.env.LAVALINK_NAME ?? "local";
 
   const url = `${secure ? "wss" : "ws"}://${host}:${port}`;
@@ -28,22 +35,17 @@ export function initShoukaku(client: Client): Shoukaku {
     },
   ];
 
-  shoukaku = new Shoukaku(
-    new Connectors.DiscordJS(client),
-    nodes,
-    {
-      // v4 option names (NOT "resumable")
-      resume: true,                 // :contentReference[oaicite:2]{index=2}
-      resumeTimeout: 60,
-      reconnectTries: 10,
-      reconnectInterval: 5,
-      restTimeout: 10,
-      voiceConnectionTimeout: 15,
-      moveOnDisconnect: false,
-    },
-  );
+  shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
+    resume: true,
+    resumeTimeout: 60,
+    reconnectTries: 10,
+    reconnectInterval: 5,
+    restTimeout: 10,
+    voiceConnectionTimeout: 15,
+    moveOnDisconnect: false,
+  });
 
-  // Safety: some DiscordJS setups require raw forwarding.
+  // Some DiscordJS setups need raw forwarding for voice events
   const connectorAny: any = shoukaku.connector as any;
   if (typeof connectorAny.raw === "function") {
     client.on("raw", (pkt: any) => connectorAny.raw(pkt));
@@ -56,7 +58,9 @@ export function initShoukaku(client: Client): Shoukaku {
     console.error(`[MUSIC] Lavalink node error: ${nodeName}`, err);
   });
   shoukaku.on("close", (nodeName: string, code: number, reason: string) => {
-    console.warn(`[MUSIC] Lavalink node closed: ${nodeName} code=${code} reason=${reason}`);
+    console.warn(
+      `[MUSIC] Lavalink node closed: ${nodeName} code=${code} reason=${reason}`,
+    );
   });
   shoukaku.on("reconnecting", (nodeName: string) => {
     console.warn(`[MUSIC] Lavalink node reconnecting: ${nodeName}`);
@@ -73,7 +77,20 @@ export function getShoukaku(): Shoukaku {
 
 function idealNode(): Node {
   const s = getShoukaku();
-  return s.getIdealNode(); // v4 API :contentReference[oaicite:3]{index=3}
+  const node = s.getIdealNode();
+  if (!node) {
+    throw new Error("[MUSIC] No Lavalink nodes available/ready yet");
+  }
+  return node;
+}
+
+function safeLeave(player: Player) {
+  const p: any = player as any;
+  try {
+    if (typeof p.leaveChannel === "function") return p.leaveChannel();
+    if (typeof p.disconnect === "function") return p.disconnect();
+    if (typeof p.destroy === "function") return p.destroy();
+  } catch {}
 }
 
 export async function joinOrGetPlayer(opts: {
@@ -82,9 +99,10 @@ export async function joinOrGetPlayer(opts: {
   shardId: number;
 }): Promise<Player> {
   const s = getShoukaku();
-  const node = s.getIdealNode();
 
-  const existing = s.players.get(opts.guildId);
+  const players: Map<string, Player> = (s as any).players ?? new Map();
+  const existing = players.get(opts.guildId);
+
   if (existing) {
     const curChannelId =
       (existing as any).connection?.channelId ??
@@ -94,7 +112,6 @@ export async function joinOrGetPlayer(opts: {
       (existing as any).data?.state?.connected ??
       (existing as any).connection?.connected;
 
-    // If it's already in the right VC and connected, reuse it
     if (curChannelId === opts.channelId && connected !== false) {
       return existing;
     }
@@ -102,33 +119,32 @@ export async function joinOrGetPlayer(opts: {
     console.log(
       `[MUSIC] Existing player stale/wrong channel (have=${curChannelId}, want=${opts.channelId}, connected=${connected}). Leaving...`,
     );
-    try {
-      await existing.leaveChannel().catch(() => {});
-    } catch {}
-    s.players.delete(opts.guildId);
+    await Promise.resolve(safeLeave(existing)).catch(() => {});
+    players.delete(opts.guildId);
   }
 
-  // This is the call that needs sessionId; connector wiring above ensures we get it.
   const player = await s.joinVoiceChannel({
     guildId: opts.guildId,
     channelId: opts.channelId,
     shardId: opts.shardId,
-    deaf: false, // don’t self-deafen; avoids Discord UI confusion
+    deaf: false,
   });
 
-  // Track player in library map (Shoukaku should do this, but we’re explicit)
-  s.players.set(opts.guildId, player);
+  players.set(opts.guildId, player);
+  (s as any).players = players;
 
   return player;
 }
 
 export function leavePlayer(guildId: string): void {
   const s = getShoukaku();
-  const player = s.players.get(guildId);
+  const players: Map<string, Player> = (s as any).players ?? new Map();
+  const player = players.get(guildId);
   if (!player) return;
 
-  player.leaveChannel().catch(() => {});
-  s.players.delete(guildId);
+  Promise.resolve(safeLeave(player)).catch(() => {});
+  players.delete(guildId);
+  (s as any).players = players;
 }
 
 export async function resolveTracks(identifier: string): Promise<{
