@@ -90,29 +90,16 @@ function nowEmbed(player: Player) {
   return embed;
 }
 
-function buildIdentifier(raw: string): string {
-  const q = raw.trim();
-
-  // If user passed a direct URL, let Lavalink decide the source.
-  if (/^https?:\/\//i.test(q)) return q;
-
-  // If user explicitly picked a search platform, respect it.
-  if (/^(ytsearch|ytmsearch|scsearch):/i.test(q)) return q;
-
-  // DEFAULT: SoundCloud search
-  return `scsearch:${q}`;
-}
-
 export const data = new SlashCommandBuilder()
   .setName("music")
-  .setDescription("Play music via Lavalink (defaults to SoundCloud search)")
+  .setDescription("Play music via Lavalink")
   .addSubcommand((sc) =>
     sc.setName("join").setDescription("Join your voice channel"),
   )
   .addSubcommand((sc) =>
     sc
       .setName("play")
-      .setDescription("Search or play a URL (default: SoundCloud)")
+      .setDescription("Search or play a URL (SoundCloud default)")
       .addStringOption((o) =>
         o.setName("query").setDescription("Song or URL").setRequired(true),
       ),
@@ -156,6 +143,7 @@ export async function execute(
   }
 
   const shardId = guild.shardId ?? 0;
+
   const sub = interaction.options.getSubcommand(true);
   const member = await guild.members.fetch(interaction.user.id);
   const vc = member.voice.channel;
@@ -204,26 +192,42 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
 
-      const raw = interaction.options.getString("query", true);
-      const identifier = buildIdentifier(raw);
+      const raw = interaction.options.getString("query", true).trim();
 
-      const { tracks, loadType } = await resolveTracks(identifier);
+      // ---- SOURCE SELECTION ----
+      // URL = play direct (could be YT/SC/etc)
+      // Prefixes:
+      //   yt:foo -> ytsearch:foo
+      //   ytm:foo -> ytmsearch:foo
+      //   sc:foo -> scsearch:foo
+      // Default: scsearch (SoundCloud)
+      let identifier: string;
+
+      if (/^https?:\/\//i.test(raw)) {
+        identifier = raw;
+      } else if (/^(yt|youtube):/i.test(raw)) {
+        identifier = `ytsearch:${raw.replace(/^(yt|youtube):/i, "").trim()}`;
+      } else if (/^ytm:/i.test(raw)) {
+        identifier = `ytmsearch:${raw.replace(/^ytm:/i, "").trim()}`;
+      } else if (/^(sc|soundcloud):/i.test(raw)) {
+        identifier = `scsearch:${raw.replace(/^(sc|soundcloud):/i, "").trim()}`;
+      } else {
+        identifier = `scsearch:${raw}`;
+      }
+
+      const { tracks } = await resolveTracks(identifier);
 
       if (!tracks.length) {
         await interaction.reply({
-          content: "❌ No tracks found.",
+          content: "❌ No tracks found on SoundCloud (try a different query or paste a URL).",
           ephemeral: true,
         });
         return;
       }
 
-      // For searches, queue only the first result.
-      const toQueue =
-        loadType === "search" ? tracks.slice(0, 1) : tracks;
-
       const queue = q(interaction.guildId!);
 
-      for (const t of toQueue as any[]) {
+      for (const t of tracks as any[]) {
         queue.push({
           encoded: t.encoded,
           title: t.info?.title ?? "track",
@@ -240,9 +244,9 @@ export async function execute(
         await playNext(interaction.guildId!, player);
       }
 
-      const firstTitle = (toQueue as any[])[0]?.info?.title ?? "track";
+      const firstTitle = (tracks as any[])[0]?.info?.title ?? "track";
       await interaction.reply({
-        content: `✅ Queued **${firstTitle}** — ${toQueue.length} track(s).`,
+        content: `✅ Queued **${firstTitle}** — ${tracks.length} track(s).`,
         ephemeral: true,
       });
       return;
@@ -356,7 +360,7 @@ export async function handleMusicButton(
   const player = await joinOrGetPlayer({
     guildId,
     channelId: vc.id,
-    shardId: guild.shardId ?? 0,
+    shardId: guild.shardId,
   });
   attachOnce(guildId, player);
 
