@@ -38,10 +38,12 @@ async function playNext(guildId: string, player: Player) {
   const next = queue.shift();
 
   if (!next) {
-    await player.playTrack({ track: { encoded: null } }).catch(() => {});
+    // v4 clean stop
+    await (player as any).stopTrack?.().catch(() => {});
     return;
   }
 
+  // Shoukaku v4 expects { track: { encoded } } :contentReference[oaicite:5]{index=5}
   await player.playTrack({ track: { encoded: next.encoded } });
   await player.setGlobalVolume(100).catch(() => {});
 }
@@ -51,18 +53,19 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
-  // Shoukaku v4 typings don't expose these string event keys.
-  // We cast to any to silence TS and keep runtime correct.
-  pAny.on("TrackEndEvent", async (ev: any) => {
+  // Shoukaku v4 player event keys are: end, exception, stuck, start, closed :contentReference[oaicite:6]{index=6}
+  pAny.on("end", async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
     await playNext(guildId, player).catch(() => {});
   });
 
-  pAny.on("TrackExceptionEvent", async () => {
+  pAny.on("exception", async (ev: any) => {
+    console.error("[MUSIC] Track exception:", ev?.exception ?? ev);
     await playNext(guildId, player).catch(() => {});
   });
 
-  pAny.on("TrackStuckEvent", async () => {
+  pAny.on("stuck", async (ev: any) => {
+    console.warn("[MUSIC] Track stuck:", ev);
     await playNext(guildId, player).catch(() => {});
   });
 }
@@ -144,7 +147,6 @@ export async function execute(
     return;
   }
 
-  // compute once after guard so TS knows it's non-null everywhere
   const shardId = guild.shardId ?? 0;
 
   const sub = interaction.options.getSubcommand(true);
@@ -182,7 +184,7 @@ export async function execute(
     }
 
     if (sub === "leave") {
-      leavePlayer(interaction.guildId!);
+      await leavePlayer(interaction.guildId!);
       queues.delete(interaction.guildId!);
       await interaction.reply({
         content: "👋 Left voice and cleared queue.",
@@ -265,7 +267,7 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
       q(interaction.guildId!).length = 0;
-      await player.playTrack({ track: { encoded: null } }).catch(() => {});
+      await (player as any).stopTrack?.().catch(() => {});
       await interaction.reply({
         content: "⏹️ Stopped and cleared queue.",
         ephemeral: true,
@@ -365,11 +367,11 @@ export async function handleMusicButton(
       return;
     case "stop":
       q(guildId).length = 0;
-      await player.playTrack({ track: { encoded: null } }).catch(() => {});
+      await (player as any).stopTrack?.().catch(() => {});
       await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
       return;
     case "leave":
-      leavePlayer(guildId);
+      await leavePlayer(guildId);
       queues.delete(guildId);
       await interaction.reply({ content: "👋 Left voice.", ephemeral: true });
       return;
