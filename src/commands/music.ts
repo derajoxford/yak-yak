@@ -20,13 +20,11 @@ type QueueItem = {
   author?: string;
   thumbnail?: string;
   requesterId: string;
+  rawQuery?: string; // for fallback searches
 };
 
-// How many search results to queue for text searches.
-// Lets us auto-skip gated youtube results until we hit a playable one.
-const SEARCH_RESULTS_TO_QUEUE = 5;
-
 const queues = new Map<string, QueueItem[]>();
+const lastSearch = new Map<string, string>(); // guildId -> last plain-text search
 
 function q(guildId: string): QueueItem[] {
   let arr = queues.get(guildId);
@@ -37,17 +35,48 @@ function q(guildId: string): QueueItem[] {
   return arr;
 }
 
+async function playTrackEncoded(player: Player, encoded: string | null) {
+  await player.playTrack({ track: { encoded } }).catch(() => {});
+  await player.setGlobalVolume(100).catch(() => {});
+}
+
+async function tryFallbackSearch(
+  guildId: string,
+  player: Player,
+  raw: string,
+): Promise<boolean> {
+  const identifiers = [
+    `ytmsearch:${raw}`,
+    `ytsearch:${raw}`,
+    `scsearch:${raw}`,
+  ];
+
+  for (const id of identifiers) {
+    try {
+      const { tracks } = await resolveTracks(id);
+      const t = tracks?.[0];
+      if (!t?.encoded) continue;
+
+      await playTrackEncoded(player, t.encoded);
+      console.log(`[MUSIC] Fallback playing from ${id}`);
+      return true;
+    } catch {
+      // keep trying next source
+    }
+  }
+  return false;
+}
+
 async function playNext(guildId: string, player: Player) {
   const queue = q(guildId);
   const next = queue.shift();
 
   if (!next) {
-    await player.playTrack({ track: { encoded: null } }).catch(() => {});
+    await playTrackEncoded(player, null);
     return;
   }
 
-  await player.playTrack({ track: { encoded: next.encoded } });
-  await player.setGlobalVolume(100).catch(() => {});
+  await playTrackEncoded(player, next.encoded);
 }
 
 function attachOnce(guildId: string, player: Player) {
@@ -55,67 +84,32 @@ function attachOnce(guildId: string, player: Player) {
   if (pAny.__yak_music_events) return;
   pAny.__yak_music_events = true;
 
-  async function trySoundcloudFallback(): Promise<boolean> {
-    if (pAny.__yak_fallback_inflight) return false;
-    if (pAny.__yak_fallback_tried) return false;
-
-    const lastQuery: string | undefined = pAny.__yak_last_search;
-    if (!lastQuery) return false;
-
-    pAny.__yak_fallback_tried = true;
-    pAny.__yak_fallback_inflight = true;
-
-    try {
-      const { tracks } = await resolveTracks(`scsearch:${lastQuery}`);
-      if (!tracks.length) return false;
-
-      const t: any = tracks[0];
-      q(guildId).push({
-        encoded: t.encoded,
-        title: t.info?.title ?? "track",
-        uri: t.info?.uri ?? "",
-        length: t.info?.length ?? 0,
-        author: t.info?.author,
-        thumbnail: t.info?.artworkUrl,
-        requesterId: pAny.__yak_last_requester ?? "unknown",
-      });
-
-      console.log(`[MUSIC] Fallback queued from SoundCloud for: ${lastQuery}`);
-      return true;
-    } catch (e) {
-      console.warn("[MUSIC] SoundCloud fallback failed:", e);
-      return false;
-    } finally {
-      pAny.__yak_fallback_inflight = false;
-    }
-  }
-
-  // ✅ Shoukaku v4 events. :contentReference[oaicite:2]{index=2}
+  // Shoukaku v4 event names
   pAny.on("end", async (ev: any) => {
     if (ev?.reason === "REPLACED") return;
-    await playNext(guildId, player).catch(() => {});
-  });
-
-  pAny.on("stuck", async () => {
     await playNext(guildId, player).catch(() => {});
   });
 
   pAny.on("exception", async (ev: any) => {
     const msg =
       ev?.exception?.message ||
+      ev?.error?.message ||
       ev?.message ||
-      "Track exception (unknown)";
+      "unknown";
     console.warn("[MUSIC] Track exception:", msg);
 
-    // If YouTube blocks the track and queue is empty, auto-fallback.
-    if (q(guildId).length === 0) {
-      const ok = await trySoundcloudFallback();
-      if (ok) {
-        await playNext(guildId, player).catch(() => {});
-        return;
+    if (/requires login|login|age restricted|private/i.test(msg)) {
+      const raw = lastSearch.get(guildId);
+      if (raw) {
+        const ok = await tryFallbackSearch(guildId, player, raw);
+        if (ok) return;
       }
     }
 
+    await playNext(guildId, player).catch(() => {});
+  });
+
+  pAny.on("stuck", async () => {
     await playNext(guildId, player).catch(() => {});
   });
 }
@@ -166,9 +160,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sc) =>
     sc.setName("resume").setDescription("Resume playback"),
   )
-  .addSubcommand((sc) =>
-    sc.setName("stop").setDescription("Stop and clear queue"),
-  )
+  .addSubcommand((sc) => sc.setName("stop").setDescription("Stop and clear queue"))
   .addSubcommand((sc) =>
     sc
       .setName("volume")
@@ -251,11 +243,15 @@ export async function execute(
       const query = interaction.options.getString("query", true).trim();
       const isUrl = /^https?:\/\//i.test(query);
 
-      // Text searches use YouTube Music search; URLs play directly.
-      const identifier = isUrl ? query : `ytmsearch:${query}`;
+      let identifier: string;
+      if (isUrl) {
+        identifier = query;
+      } else {
+        lastSearch.set(interaction.guildId!, query);
+        identifier = `ytmsearch:${query}`;
+      }
 
-      const { tracks, loadType } = await resolveTracks(identifier);
-
+      const { tracks } = await resolveTracks(identifier);
       if (!tracks.length) {
         await interaction.reply({
           content: "❌ No tracks found.",
@@ -264,31 +260,11 @@ export async function execute(
         return;
       }
 
-      const ltLower = String(loadType ?? "").toLowerCase();
-      const playlistLoaded = ltLower.includes("playlist");
-
-      let toAdd: any[] = [];
-
-      if (playlistLoaded && isUrl) {
-        // Playlist URL -> add all
-        toAdd = tracks;
-      } else if (isUrl) {
-        // Single URL -> add just first
-        toAdd = tracks.slice(0, 1);
-      } else {
-        // Text search -> add top N results so we can skip gated ones
-        toAdd = tracks.slice(0, SEARCH_RESULTS_TO_QUEUE);
-
-        // store for fallback
-        const pAny = player as any;
-        pAny.__yak_last_search = query;
-        pAny.__yak_last_requester = interaction.user.id;
-        pAny.__yak_fallback_tried = false;
-      }
-
       const queue = q(interaction.guildId!);
 
-      for (const t of toAdd as any[]) {
+      const toQueue = isUrl ? (tracks as any[]) : (tracks as any[]).slice(0, 1);
+
+      for (const t of toQueue) {
         queue.push({
           encoded: t.encoded,
           title: t.info?.title ?? "track",
@@ -297,6 +273,7 @@ export async function execute(
           author: t.info?.author,
           thumbnail: t.info?.artworkUrl,
           requesterId: interaction.user.id,
+          rawQuery: isUrl ? undefined : query,
         });
       }
 
@@ -305,9 +282,9 @@ export async function execute(
         await playNext(interaction.guildId!, player);
       }
 
-      const firstTitle = (toAdd as any[])[0]?.info?.title ?? "track";
+      const firstTitle = toQueue[0]?.info?.title ?? "track";
       await interaction.reply({
-        content: `✅ Queued **${firstTitle}** — ${toAdd.length} track(s).`,
+        content: `✅ Queued **${firstTitle}** — ${toQueue.length} track(s).`,
         ephemeral: true,
       });
       return;
@@ -341,7 +318,7 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
       q(interaction.guildId!).length = 0;
-      await player.playTrack({ track: { encoded: null } }).catch(() => {});
+      await playTrackEncoded(player, null);
       await interaction.reply({
         content: "⏹️ Stopped and cleared queue.",
         ephemeral: true,
@@ -400,7 +377,6 @@ export async function execute(
   }
 }
 
-// Button router used by src/index.ts
 export async function handleMusicButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -441,7 +417,7 @@ export async function handleMusicButton(
       return;
     case "stop":
       q(guildId).length = 0;
-      await player.playTrack({ track: { encoded: null } }).catch(() => {});
+      await playTrackEncoded(player, null);
       await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
       return;
     case "leave":
