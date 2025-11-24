@@ -1,10 +1,16 @@
 // src/music/shoukaku.ts
 import type { Client } from "discord.js";
-import { Shoukaku, Connectors, type NodeOption, type Player, LoadType } from "shoukaku";
+import {
+  Shoukaku,
+  Connectors,
+  type NodeOption,
+  type Player,
+  LoadType,
+} from "shoukaku";
 
 let shoukaku: Shoukaku | null = null;
 
-// We store channel meta ourselves because v4 Player doesn't expose channelId reliably.
+// Store channel meta ourselves because v4 Player doesn't expose channelId reliably.
 const playerMeta = new Map<string, { channelId: string }>();
 
 function mustShoukaku(): Shoukaku {
@@ -49,7 +55,9 @@ export function initShoukaku(client: Client): Shoukaku {
   });
 
   shoukaku.on("close", (name: string, code: number, reason: string) => {
-    console.warn(`[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`);
+    console.warn(
+      `[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`,
+    );
   });
 
   shoukaku.on("reconnecting", (name: string) => {
@@ -86,12 +94,11 @@ export async function joinOrGetPlayer(opts: {
 }): Promise<Player> {
   const s = mustShoukaku();
 
-  // If we already have a player, only treat it as stale if *we* previously stored a channelId
-  // and it differs. If meta is missing, DO NOT nuke it (this was your loop).
   const existing = s.players.get(opts.guildId);
   const meta = playerMeta.get(opts.guildId);
 
   if (existing) {
+    // ONLY treat stale if we *have* meta and it differs.
     if (meta && meta.channelId !== opts.channelId) {
       console.log(
         `[MUSIC] Existing player in different channel (have=${meta.channelId}, want=${opts.channelId}). Leaving...`,
@@ -102,7 +109,6 @@ export async function joinOrGetPlayer(opts: {
     }
   }
 
-  // Join fresh
   const player = await s.joinVoiceChannel({
     guildId: opts.guildId,
     channelId: opts.channelId,
@@ -116,15 +122,22 @@ export async function joinOrGetPlayer(opts: {
 }
 
 // Resolve helper used by /music play
-export async function resolveTracks(identifier: string) {
-  const node = mustShoukaku().getIdealNode(); // v4 API
-  const res = await node.rest.resolve(identifier);
+export async function resolveTracks(identifier: string): Promise<{
+  tracks: any[];
+  loadType: LoadType;
+}> {
+  const node = mustShoukaku().getIdealNode();
+  if (!node) {
+    throw new Error("No Lavalink nodes are ready");
+  }
+
+  const res: any = await node.rest.resolve(identifier);
 
   if (!res || res.loadType === LoadType.EMPTY || res.loadType === LoadType.ERROR) {
     return { tracks: [], loadType: res?.loadType ?? LoadType.EMPTY };
   }
 
-  switch (res.loadType) {
+  switch (res.loadType as LoadType) {
     case LoadType.TRACK:
       return { tracks: res.data ? [res.data] : [], loadType: res.loadType };
     case LoadType.PLAYLIST:
