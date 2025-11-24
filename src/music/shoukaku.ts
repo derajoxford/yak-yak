@@ -6,7 +6,6 @@ import {
   type Node,
   type Player,
   type NodeOption,
-  type LavalinkResponse,
 } from "shoukaku";
 
 let shoukaku: Shoukaku | null = null;
@@ -96,11 +95,42 @@ function getIdealNode(): Node {
   return fallback;
 }
 
+export type ResolvedTracks = {
+  tracks: any[];
+  loadType: string;
+};
+
 export async function resolveTracks(
   identifier: string,
-): Promise<LavalinkResponse> {
+): Promise<ResolvedTracks> {
   const node = getIdealNode();
-  return node.rest.resolve(identifier);
+  const res = await node.rest.resolve(identifier);
+
+  if (!res) {
+    return { tracks: [], loadType: "empty" };
+  }
+
+  const r: any = res;
+
+  // Lavalink v4: { loadType, data }
+  // data can be: Track, Track[], or { tracks: Track[] }
+  if (Array.isArray(r.tracks)) {
+    return { tracks: r.tracks, loadType: r.loadType ?? "track" };
+  }
+
+  if (Array.isArray(r.data)) {
+    return { tracks: r.data, loadType: r.loadType ?? "track" };
+  }
+
+  if (r.data?.tracks && Array.isArray(r.data.tracks)) {
+    return { tracks: r.data.tracks, loadType: r.loadType ?? "playlist" };
+  }
+
+  if (r.data && r.data.encoded) {
+    return { tracks: [r.data], loadType: r.loadType ?? "track" };
+  }
+
+  return { tracks: [], loadType: r.loadType ?? "unknown" };
 }
 
 type JoinOpts = {
@@ -128,12 +158,11 @@ export async function joinOrGetPlayer(opts: JoinOpts): Promise<Player> {
   const node = getIdealNode();
   if (!node) throw new Error("Can't find any nodes to connect on");
 
-  // Join voice + create player (idempotent around fresh state)
   const player = await s.joinVoiceChannel({
     guildId: opts.guildId,
     channelId: opts.channelId,
     shardId: opts.shardId,
-    deaf: false, // try to avoid self-deafen
+    deaf: false,
     mute: false,
   });
 
