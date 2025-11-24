@@ -10,24 +10,40 @@ function must() {
 }
 
 export function initShoukaku(client: Client) {
-  const host = (process.env.LAVALINK_HOST || "127.0.0.1").trim();
-  const port = (process.env.LAVALINK_PORT || "2333").trim();
-  const secure = (process.env.LAVALINK_SECURE || "false").toLowerCase() === "true";
+  let host = (process.env.LAVALINK_HOST || "127.0.0.1").trim();
+  let port = (process.env.LAVALINK_PORT || "2333").trim();
+  const secure =
+    (process.env.LAVALINK_SECURE || "false").toLowerCase() === "true";
   const auth = (process.env.LAVALINK_PASSWORD || "").trim();
+
+  // Guard against poisoned env like host="ws" or host="wss"
+  if (!host || host === "ws" || host === "wss") host = "127.0.0.1";
+
+  // Guard against someone stuffing a full URL into HOST by mistake
+  if (host.includes("://")) {
+    try {
+      const u = new URL(host);
+      host = u.hostname || "127.0.0.1";
+      if (u.port) port = u.port;
+    } catch {}
+  }
 
   let url =
     (process.env.LAVALINK_URL || "").trim() ||
     `${secure ? "wss" : "ws"}://${host}:${port}`;
 
-  // If someone put only host:port or only "ws", normalize to full ws://host:port
+  // Normalize URL if it's missing scheme or is literally "ws"/"wss"
   if (!url.includes("://")) {
-    // if they accidentally set "ws" or "wss" as URL, fall back to host/port
     if (url === "ws" || url === "wss") {
       url = `${secure ? "wss" : "ws"}://${host}:${port}`;
     } else {
       url = `${secure ? "wss" : "ws"}://${url}`;
     }
   }
+
+  console.log(
+    `[MUSIC] Lavalink config host=${host} port=${port} secure=${secure} url=${url}`,
+  );
 
   const nodes = [{ name: "local", url, auth }];
 
@@ -39,10 +55,16 @@ export function initShoukaku(client: Client) {
     moveOnDisconnect: false,
   });
 
-  s.on("ready", (name) => console.log(`[MUSIC] Lavalink node ready: ${name} url=${url}`));
-  s.on("error", (name, error) => console.error(`[MUSIC] Lavalink node error: ${name}`, error));
+  s.on("ready", (name) =>
+    console.log(`[MUSIC] Lavalink node ready: ${name} url=${url}`),
+  );
+  s.on("error", (name, error) =>
+    console.error(`[MUSIC] Lavalink node error: ${name}`, error),
+  );
   s.on("close", (name, code, reason) =>
-    console.warn(`[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`),
+    console.warn(
+      `[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`,
+    ),
   );
   s.on("reconnecting", (name) =>
     console.warn(`[MUSIC] Lavalink node reconnecting: ${name}`),
@@ -74,7 +96,6 @@ export async function joinOrGetPlayer(opts: {
 
     if (existingChannel === opts.channelId) return existing;
 
-    // stale/wrong channel → hard disconnect
     try {
       if (typeof (existing as any).disconnect === "function") {
         await (existing as any).disconnect();
@@ -115,17 +136,18 @@ export function leavePlayer(guildId: string) {
   } catch {}
 }
 
-export async function resolveTracks(identifier: string): Promise<{ tracks: any[] }> {
+export async function resolveTracks(
+  identifier: string,
+): Promise<{ tracks: any[] }> {
   const node = idealNode();
   const res: any = await node.rest.resolve(identifier);
 
-  // Lavalink v4 results vary by loadType; normalize to a flat tracks array
   let tracks: any[] = [];
 
-  if (Array.isArray(res?.data)) tracks = res.data; // search result
+  if (Array.isArray(res?.data)) tracks = res.data;
   else if (Array.isArray(res?.tracks)) tracks = res.tracks;
-  else if (res?.data?.tracks && Array.isArray(res.data.tracks)) tracks = res.data.tracks; // playlist
-  else if (res?.data && !Array.isArray(res.data)) tracks = [res.data]; // single track
+  else if (Array.isArray(res?.data?.tracks)) tracks = res.data.tracks;
+  else if (res?.data && !Array.isArray(res.data)) tracks = [res.data];
 
   return { tracks };
 }
