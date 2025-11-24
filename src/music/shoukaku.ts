@@ -12,6 +12,9 @@ function mustShoukaku(): Shoukaku {
 }
 
 export function initShoukaku(client: Client) {
+  // Guard against double init (can happen on hot reload / multiple imports)
+  if (shoukaku) return shoukaku;
+
   const host = process.env.LAVALINK_HOST || "127.0.0.1";
   const port = Number(process.env.LAVALINK_PORT || 2333);
   const secure = /^true$/i.test(process.env.LAVALINK_SECURE || "false");
@@ -55,6 +58,8 @@ export function initShoukaku(client: Client) {
   });
 
   console.log("[MUSIC] Shoukaku initialized");
+
+  return shoukaku;
 }
 
 export async function joinOrGetPlayer(args: {
@@ -66,12 +71,24 @@ export async function joinOrGetPlayer(args: {
 
   const existing = s.players.get(args.guildId) as Player | undefined;
 
-  // If we already have a connection/player, reuse it.
-  // This prevents: "This guild already have an existing connection"
   if (existing && (existing as any).connection) {
-    return existing;
+    const curChannelId = (existing as any).connection?.channelId;
+
+    // If already connected to THIS channel, reuse.
+    if (curChannelId === args.channelId) {
+      return existing;
+    }
+
+    // Otherwise leave cleanly first (v4 pattern)
+    try {
+      (existing as any).connection?.disconnect();
+    } catch {}
+    try {
+      await s.leaveVoiceChannel(args.guildId);
+    } catch {}
   }
 
+  // Fresh join to requested VC
   return s.joinVoiceChannel({
     guildId: args.guildId,
     channelId: args.channelId,
@@ -80,16 +97,17 @@ export async function joinOrGetPlayer(args: {
   } as any);
 }
 
-export function leavePlayer(guildId: string) {
+export async function leavePlayer(guildId: string) {
   const s = mustShoukaku();
   const existing = s.players.get(guildId) as Player | undefined;
   if (!existing) return;
 
+  // Shoukaku v4: disconnect via connection + leaveVoiceChannel on Shoukaku
   try {
     (existing as any).connection?.disconnect();
   } catch {}
   try {
-    existing.disconnect();
+    await s.leaveVoiceChannel(guildId);
   } catch {}
   try {
     s.players.delete(guildId);
