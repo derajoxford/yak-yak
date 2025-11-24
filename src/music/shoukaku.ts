@@ -57,17 +57,6 @@ export function initShoukaku(client: Client) {
   console.log("[MUSIC] Shoukaku initialized");
 }
 
-async function waitForNode(timeoutMs = 15000) {
-  const s = mustShoukaku();
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const node = s.getIdealNode();
-    if (node) return;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  throw new Error("No Lavalink nodes available (timed out waiting for node).");
-}
-
 export async function joinOrGetPlayer(args: {
   guildId: string;
   channelId: string;
@@ -75,24 +64,24 @@ export async function joinOrGetPlayer(args: {
 }): Promise<Player> {
   const s = mustShoukaku();
 
-  await waitForNode();
+  // If nodes aren't ready yet, don't even try to join.
+  if (!s.getIdealNode()) {
+    throw new Error("Lavalink not ready yet (no connected nodes).");
+  }
 
-  const existing = s.players.get(args.guildId) as Player | undefined;
-  const existingAny = existing as any;
+  const existing = s.players.get(args.guildId);
+  const conn = s.connections.get(args.guildId);
 
-  if (existingAny?.connection) {
-    const connAny = existingAny.connection as any;
-    const sameChannel = connAny.channelId === args.channelId;
-    const disconnected =
-      connAny.state === "DISCONNECTED" || connAny.state === 0;
+  // If we already have a connection/player, reuse it.
+  // This prevents: "This guild already have an existing connection"
+  if (existing && conn) {
+    // Same VC? return player.
+    if (conn.channelId === args.channelId) return existing;
 
-    if (sameChannel && !disconnected) {
-      // TS-safe: existingAny is definitely a live player here
-      return existingAny as Player;
-    }
-
-    try { connAny.disconnect(); } catch {}
-    try { await s.leaveVoiceChannel(args.guildId); } catch {}
+    // Different VC -> leave old, then rejoin new.
+    await s.leaveVoiceChannel(args.guildId).catch(() => {});
+  } else if (existing && !conn) {
+    // Stale player without a connection: drop it so we can rejoin cleanly.
     try { s.players.delete(args.guildId); } catch {}
   }
 
@@ -106,13 +95,9 @@ export async function joinOrGetPlayer(args: {
 
 export function leavePlayer(guildId: string) {
   const s = mustShoukaku();
-  const existing = s.players.get(guildId) as Player | undefined;
-  if (!existing) return;
-
-  const existingAny = existing as any;
-  try { existingAny?.connection?.disconnect(); } catch {}
   s.leaveVoiceChannel(guildId).catch(() => {});
   try { s.players.delete(guildId); } catch {}
+  try { s.connections.delete(guildId); } catch {}
 }
 
 export async function resolveTracks(identifier: string): Promise<{
@@ -125,6 +110,7 @@ export async function resolveTracks(identifier: string): Promise<{
 
   const res: any = await node.rest.resolve(identifier);
 
+  // Lavalink v4 returns tracks in res.data (array) for searches/loads.
   const data = res?.data;
   const tracks: any[] = Array.isArray(data)
     ? data
