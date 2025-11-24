@@ -87,7 +87,8 @@ export async function joinOrGetPlayer(args: {
       connAny.state === "DISCONNECTED" || connAny.state === 0;
 
     if (sameChannel && !disconnected) {
-      return existing;
+      // TS-safe: existingAny is definitely a live player here
+      return existingAny as Player;
     }
 
     try { connAny.disconnect(); } catch {}
