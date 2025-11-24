@@ -78,9 +78,10 @@ export async function joinOrGetPlayer(args: {
   await waitForNode();
 
   const existing = s.players.get(args.guildId) as Player | undefined;
+  const existingAny = existing as any;
 
-  if (existing?.connection) {
-    const connAny = existing.connection as any;
+  if (existingAny?.connection) {
+    const connAny = existingAny.connection as any;
     const sameChannel = connAny.channelId === args.channelId;
     const disconnected =
       connAny.state === "DISCONNECTED" || connAny.state === 0;
@@ -107,7 +108,8 @@ export function leavePlayer(guildId: string) {
   const existing = s.players.get(guildId) as Player | undefined;
   if (!existing) return;
 
-  try { (existing.connection as any)?.disconnect(); } catch {}
+  const existingAny = existing as any;
+  try { existingAny?.connection?.disconnect(); } catch {}
   s.leaveVoiceChannel(guildId).catch(() => {});
   try { s.players.delete(guildId); } catch {}
 }
