@@ -43,7 +43,7 @@ async function playNext(guildId: string, player: Player) {
   }
 
   await player.playTrack({ track: { encoded: next.encoded } });
-  await (player as any).setGlobalVolume?.(100).catch(() => {});
+  await player.setGlobalVolume(100).catch(() => {});
 }
 
 function attachOnce(guildId: string, player: Player) {
@@ -75,16 +75,10 @@ function nowEmbed(player: Player) {
   }
 
   const info = cur.info ?? {};
-  embed.setDescription(
-    `**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`,
-  );
+  embed.setDescription(`**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`);
 
   if (info.uri) embed.addFields({ name: "Link", value: info.uri });
-  if (info.length)
-    embed.addFields({
-      name: "Length",
-      value: `${Math.floor(info.length / 1000)}s`,
-    });
+  if (info.length) embed.addFields({ name: "Length", value: `${Math.floor(info.length / 1000)}s` });
   if (info.artworkUrl) embed.setThumbnail(info.artworkUrl);
 
   return embed;
@@ -104,9 +98,15 @@ export const data = new SlashCommandBuilder()
         o.setName("query").setDescription("Song or URL").setRequired(true),
       ),
   )
-  .addSubcommand((sc) => sc.setName("skip").setDescription("Skip current track"))
-  .addSubcommand((sc) => sc.setName("pause").setDescription("Pause playback"))
-  .addSubcommand((sc) => sc.setName("resume").setDescription("Resume playback"))
+  .addSubcommand((sc) =>
+    sc.setName("skip").setDescription("Skip current track"),
+  )
+  .addSubcommand((sc) =>
+    sc.setName("pause").setDescription("Pause playback"),
+  )
+  .addSubcommand((sc) =>
+    sc.setName("resume").setDescription("Resume playback"),
+  )
   .addSubcommand((sc) =>
     sc.setName("stop").setDescription("Stop and clear queue"),
   )
@@ -123,8 +123,12 @@ export const data = new SlashCommandBuilder()
           .setRequired(true),
       ),
   )
-  .addSubcommand((sc) => sc.setName("now").setDescription("Show now playing"))
-  .addSubcommand((sc) => sc.setName("queue").setDescription("Show queue"))
+  .addSubcommand((sc) =>
+    sc.setName("now").setDescription("Show now playing"),
+  )
+  .addSubcommand((sc) =>
+    sc.setName("queue").setDescription("Show queue"),
+  )
   .addSubcommand((sc) =>
     sc.setName("leave").setDescription("Leave voice and clear queue"),
   );
@@ -151,8 +155,7 @@ export async function execute(
       return null;
     }
 
-    // TS doesn't narrow captured vars inside closures reliably.
-    const shardId = guild!.shardId ?? 0;
+    const shardId = guild.shardId ?? 0;
 
     const player = await joinOrGetPlayer({
       guildId: interaction.guildId!,
@@ -271,7 +274,7 @@ export async function execute(
       const player = await requirePlayer();
       if (!player) return;
       const amount = interaction.options.getInteger("amount", true);
-      await (player as any).setGlobalVolume(amount).catch(() => {});
+      await player.setGlobalVolume(amount).catch(() => {});
       await interaction.reply({
         content: `🔊 Volume set to ${amount}.`,
         ephemeral: true,
@@ -296,9 +299,7 @@ export async function execute(
         return;
       }
 
-      const lines = queue
-        .slice(0, 15)
-        .map((it, i) => `${i + 1}. ${it.title}`);
+      const lines = queue.slice(0, 15).map((it, i) => `${i + 1}. ${it.title}`);
       await interaction.reply({
         content: `**Queue:**\n${lines.join("\n")}`,
         ephemeral: true,
@@ -342,7 +343,7 @@ export async function handleMusicButton(
   const player = await joinOrGetPlayer({
     guildId,
     channelId: vc.id,
-    shardId: guild.shardId ?? 0,
+    shardId: guild.shardId,
   });
   attachOnce(guildId, player);
 
