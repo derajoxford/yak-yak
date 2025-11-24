@@ -8,7 +8,7 @@ import {
 import { type Player } from "shoukaku";
 import {
   joinOrGetPlayer,
-  leavePlayer,
+  leaveGuild,
   resolveTracks,
 } from "../music/shoukaku.js";
 
@@ -77,10 +77,16 @@ function nowEmbed(player: Player) {
   }
 
   const info = cur.info ?? {};
-  embed.setDescription(`**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`);
+  embed.setDescription(
+    `**${info.title ?? "track"}**\nby ${info.author ?? "unknown"}`
+  );
 
   if (info.uri) embed.addFields({ name: "Link", value: info.uri });
-  if (info.length) embed.addFields({ name: "Length", value: `${Math.floor(info.length / 1000)}s` });
+  if (info.length)
+    embed.addFields({
+      name: "Length",
+      value: `${Math.floor(info.length / 1000)}s`,
+    });
   if (info.artworkUrl) embed.setThumbnail(info.artworkUrl);
 
   return embed;
@@ -181,7 +187,7 @@ export async function execute(
     }
 
     if (sub === "leave") {
-      leavePlayer(interaction.guildId!);
+      await leaveGuild(interaction.guildId!);
       queues.delete(interaction.guildId!);
       await interaction.reply({
         content: "👋 Left voice and cleared queue.",
@@ -199,7 +205,8 @@ export async function execute(
         ? query
         : `ytsearch:${query}`;
 
-      const { tracks } = await resolveTracks(identifier);
+      const res = await resolveTracks(identifier);
+      const tracks: any[] = (res as any)?.tracks ?? [];
 
       if (!tracks.length) {
         await interaction.reply({
@@ -211,7 +218,7 @@ export async function execute(
 
       const queue = q(interaction.guildId!);
 
-      for (const t of tracks as any[]) {
+      for (const t of tracks) {
         queue.push({
           encoded: t.encoded,
           title: t.info?.title ?? "track",
@@ -228,7 +235,7 @@ export async function execute(
         await playNext(interaction.guildId!, player);
       }
 
-      const firstTitle = (tracks as any[])[0]?.info?.title ?? "track";
+      const firstTitle = tracks[0]?.info?.title ?? "track";
       await interaction.reply({
         content: `✅ Queued **${firstTitle}** — ${tracks.length} track(s).`,
         ephemeral: true,
@@ -301,7 +308,9 @@ export async function execute(
         return;
       }
 
-      const lines = queue.slice(0, 15).map((it, i) => `${i + 1}. ${it.title}`);
+      const lines = queue
+        .slice(0, 15)
+        .map((it, i) => `${i + 1}. ${it.title}`);
       await interaction.reply({
         content: `**Queue:**\n${lines.join("\n")}`,
         ephemeral: true,
@@ -368,7 +377,7 @@ export async function handleMusicButton(
       await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
       return;
     case "leave":
-      leavePlayer(guildId);
+      await leaveGuild(guildId);
       queues.delete(guildId);
       await interaction.reply({ content: "👋 Left voice.", ephemeral: true });
       return;
