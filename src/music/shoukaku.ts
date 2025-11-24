@@ -1,165 +1,146 @@
 // src/music/shoukaku.ts
-import { Shoukaku, Connectors, type Node, type Player } from "shoukaku";
-import type { Client } from "discord.js";
+import { Client } from "discord.js";
+import {
+  Shoukaku,
+  Connectors,
+  type Node,
+  type Player,
+  type NodeOption,
+  type LavalinkResponse,
+} from "shoukaku";
 
-let s: Shoukaku | null = null;
+let shoukaku: Shoukaku | null = null;
 
-// local cache (nice to have), but we will trust Shoukaku's internal maps first
-const localPlayers = new Map<string, Player>();
-
-function envBool(v: string | undefined, dflt = false) {
-  if (v == null) return dflt;
-  return v.toLowerCase() === "true" || v === "1" || v.toLowerCase() === "yes";
+function env(name: string, fallback?: string) {
+  const v = process.env[name];
+  return v !== undefined && v !== "" ? v : fallback;
 }
 
-function getIdealNode(): Node {
-  if (!s) throw new Error("Shoukaku not initialized");
-  const node = s.getIdealNode();
-  if (!node) throw new Error("No Lavalink nodes available");
-  return node;
+function envInt(name: string, fallback: number) {
+  const raw = env(name);
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : fallback;
 }
 
-export function initShoukaku(client: Client) {
-  const host = process.env.LAVALINK_HOST || "127.0.0.1";
-  const port = Number(process.env.LAVALINK_PORT || "2333");
-  const secure = envBool(process.env.LAVALINK_SECURE, false);
+function envBool(name: string, fallback = false) {
+  const raw = env(name);
+  if (!raw) return fallback;
+  return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
+}
 
-  // Shoukaku expects host:port, NOT ws://...
-  const url = `${host}:${port}`;
-  const auth = process.env.LAVALINK_PASSWORD || "";
+export function initShoukaku(client: Client): Shoukaku {
+  if (shoukaku) return shoukaku;
+
+  const host = env("LAVALINK_HOST", "127.0.0.1")!;
+  const port = envInt("LAVALINK_PORT", 2333);
+  const secure = envBool("LAVALINK_SECURE", false);
+  const password = env("LAVALINK_PASSWORD", "")!;
+
+  const urlNoProto = `${host}:${port}`;
+  const urlDisplay =
+    env("LAVALINK_URL") ?? `${secure ? "wss" : "ws"}://${urlNoProto}`;
 
   console.log(
-    `[MUSIC] Lavalink config host=${host} port=${port} secure=${secure} url=ws://${url}`,
+    `[MUSIC] Lavalink config host=${host} port=${port} secure=${secure} url=${urlDisplay}`,
   );
 
-  const nodes = [
+  const nodes: NodeOption[] = [
     {
       name: "local",
-      url,
-      auth,
+      url: urlNoProto, // Shoukaku v4 wants host:port WITHOUT ws://
+      auth: password,
       secure,
     },
   ];
 
-  const connector = new Connectors.DiscordJS(client);
-
-  s = new Shoukaku(connector, nodes, {
-    reconnectTries: 10,
-    reconnectInterval: 5,
+  shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
+    moveOnDisconnect: true,
+    resume: false,
+    reconnectTries: 5,
     restTimeout: 10_000,
-    moveOnDisconnect: false,
   });
 
-  s.on("ready", (name) => {
-    console.log(`[MUSIC] Lavalink node ready: ${name} url=${url}`);
-  });
-
-  s.on("error", (name, err) => {
-    console.log(`[MUSIC] Lavalink node error: ${name}`, err);
-  });
-
-  s.on("close", (name, code, reason) => {
+  shoukaku.on("ready", (name) =>
+    console.log(`[MUSIC] Lavalink node ready: ${name} url=${urlNoProto}`),
+  );
+  shoukaku.on("error", (name, error) =>
+    console.log(`[MUSIC] Lavalink node error: ${name} ${error}`),
+  );
+  shoukaku.on("close", (name, code, reason) =>
     console.log(
       `[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason ?? ""}`,
-    );
-  });
-
-  s.on("reconnecting", (name) => {
-    console.log(`[MUSIC] Lavalink node reconnecting: ${name}`);
-  });
+    ),
+  );
+  shoukaku.on("reconnecting", (name) =>
+    console.log(`[MUSIC] Lavalink node reconnecting: ${name}`),
+  );
 
   console.log("[MUSIC] Shoukaku initialized");
+  return shoukaku;
 }
 
-export async function joinOrGetPlayer(opts: {
+export function getShoukaku(): Shoukaku {
+  if (!shoukaku) {
+    throw new Error("Shoukaku not initialized. Call initShoukaku(client) first.");
+  }
+  return shoukaku;
+}
+
+function getIdealNode(): Node {
+  const s = getShoukaku();
+  const ideal = s.getIdealNode();
+  if (ideal) return ideal;
+
+  const fallback = [...s.nodes.values()][0];
+  if (!fallback) throw new Error("No Lavalink nodes configured.");
+  return fallback;
+}
+
+export async function resolveTracks(
+  identifier: string,
+): Promise<LavalinkResponse> {
+  const node = getIdealNode();
+  return node.rest.resolve(identifier);
+}
+
+type JoinOpts = {
   guildId: string;
   channelId: string;
   shardId: number;
-}): Promise<Player> {
-  if (!s) throw new Error("Shoukaku not initialized");
+};
 
-  const { guildId, channelId, shardId } = opts;
+export async function joinOrGetPlayer(opts: JoinOpts): Promise<Player> {
+  const s = getShoukaku();
 
-  const sAny = s as any;
+  // ✅ If a player already exists, reuse it.
+  const existing = s.players.get(opts.guildId);
+  if (existing) return existing;
 
-  // 1) FIRST: Shoukaku's own player map (source of truth)
-  const existingFromShoukaku: Player | undefined =
-    sAny.players?.get?.(guildId);
-
-  const existing = existingFromShoukaku ?? localPlayers.get(guildId);
-  if (existing) {
-    const exAny = existing as any;
-
-    // If bot is already connected but in another VC, try move.
-    const curChan =
-      exAny?.connection?.channelId ??
-      exAny?.channelId ??
-      exAny?.data?.channelId;
-
-    if (curChan && curChan !== channelId) {
-      try {
-        await exAny.moveChannel?.(channelId);
-      } catch {
-        // If move fails, fall through and rejoin cleanly
-      }
-    }
-
-    localPlayers.set(guildId, existing);
-    return existing;
-  }
-
-  // 2) If Shoukaku thinks there's a connection but no player, clear it.
-  const hasConn = sAny.connections?.get?.(guildId);
-  if (hasConn) {
+  // ✅ If a stale connection exists without a player, clear it first.
+  if (s.connections.has(opts.guildId)) {
     try {
-      await sAny.leaveVoiceChannel?.(guildId);
-    } catch {}
+      await s.leaveVoiceChannel(opts.guildId);
+    } catch {
+      // ignore cleanup errors
+    }
   }
 
-  // 3) Fresh join
   const node = getIdealNode();
-  const player: Player = await s.joinVoiceChannel({
-    guildId,
-    channelId,
-    shardId,
-    deaf: true,
+  if (!node) throw new Error("Can't find any nodes to connect on");
+
+  // Join voice + create player (idempotent around fresh state)
+  const player = await s.joinVoiceChannel({
+    guildId: opts.guildId,
+    channelId: opts.channelId,
+    shardId: opts.shardId,
+    deaf: false, // try to avoid self-deafen
+    mute: false,
   });
 
-  localPlayers.set(guildId, player);
   return player;
 }
 
 export function leavePlayer(guildId: string) {
-  const p = localPlayers.get(guildId);
-  if (p) {
-    const pAny = p as any;
-    try {
-      pAny.destroy?.();
-    } catch {}
-    localPlayers.delete(guildId);
-  }
-
-  const sAny = s as any;
-  try {
-    sAny?.leaveVoiceChannel?.(guildId);
-  } catch {}
-
-  // also nuke Shoukaku internal player if present
-  try {
-    sAny?.players?.delete?.(guildId);
-  } catch {}
-}
-
-export async function resolveTracks(identifier: string): Promise<{
-  tracks: any[];
-  loadType?: string;
-}> {
-  const node = getIdealNode();
-
-  const res = (await (node as any).rest.resolve(identifier)) as any;
-  if (!res) return { tracks: [], loadType: "NO_MATCHES" };
-
-  // Lavalink v4 returns { loadType, data: [...] }
-  const tracks = res.data ?? res.tracks ?? [];
-  return { tracks, loadType: res.loadType };
+  const s = getShoukaku();
+  s.leaveVoiceChannel(guildId).catch(() => {});
 }
