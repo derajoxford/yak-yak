@@ -1,35 +1,44 @@
 // src/music/shoukaku.ts
-import { Shoukaku, Connectors, type NodeOption, type Player } from "shoukaku";
 import type { Client } from "discord.js";
+import { Shoukaku, Connectors, type NodeOption, type Player, LoadType } from "shoukaku";
 
 let shoukaku: Shoukaku | null = null;
 
-type GuildPlayerState = {
-  player: Player;
-  channelId: string;
-};
+// We store channel meta ourselves because v4 Player doesn't expose channelId reliably.
+const playerMeta = new Map<string, { channelId: string }>();
 
-const guildPlayers = new Map<string, GuildPlayerState>();
+function mustShoukaku(): Shoukaku {
+  if (!shoukaku) throw new Error("Shoukaku not initialized yet.");
+  return shoukaku;
+}
 
 export function initShoukaku(client: Client): Shoukaku {
   if (shoukaku) return shoukaku;
 
+  const host = process.env.LAVALINK_HOST ?? "127.0.0.1";
+  const port = Number(process.env.LAVALINK_PORT ?? "2333");
+  const password = process.env.LAVALINK_PASSWORD;
+
+  if (!password) {
+    throw new Error("LAVALINK_PASSWORD env var missing");
+  }
+
   const nodes: NodeOption[] = [
     {
       name: "local",
-      url: process.env.LAVALINK_URL ?? "127.0.0.1:2333",
-      auth: process.env.LAVALINK_PASSWORD ?? "youshallnotpass",
+      url: `${host}:${port}`,
+      auth: password,
       secure: false,
     },
   ];
 
-  // Shoukaku v4 options
   shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
     resume: true,
     resumeTimeout: 60,
-    reconnectTries: 2,
-    restTimeout: 10000,
-  } as any);
+    reconnectTries: 5,
+    reconnectInterval: 5,
+    restTimeout: 10_000,
+  });
 
   shoukaku.on("ready", (name: string) => {
     console.log(`[MUSIC] Lavalink node ready: ${name}`);
@@ -40,9 +49,7 @@ export function initShoukaku(client: Client): Shoukaku {
   });
 
   shoukaku.on("close", (name: string, code: number, reason: string) => {
-    console.warn(
-      `[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`,
-    );
+    console.warn(`[MUSIC] Lavalink node closed: ${name} code=${code} reason=${reason}`);
   });
 
   shoukaku.on("reconnecting", (name: string) => {
@@ -53,31 +60,23 @@ export function initShoukaku(client: Client): Shoukaku {
 }
 
 export function getShoukaku(): Shoukaku {
-  if (!shoukaku) throw new Error("Shoukaku not initialized yet");
-  return shoukaku;
+  return mustShoukaku();
 }
 
-function pickNode(s: Shoukaku): any {
-  const nodesMap: Map<string, any> = (s as any).nodes;
-  if (!nodesMap || nodesMap.size === 0) {
-    throw new Error("No Lavalink nodes available");
+export function getPlayer(guildId: string): Player | undefined {
+  return mustShoukaku().players.get(guildId);
+}
+
+export function leavePlayer(guildId: string): void {
+  const s = mustShoukaku();
+  const existing = s.players.get(guildId);
+  if (existing) {
+    try {
+      existing.destroy();
+    } catch {}
   }
-
-  // Prefer a connected node if possible
-  for (const n of nodesMap.values()) {
-    if (n?.state === 2 || n?.state === "CONNECTED") return n;
-  }
-
-  return nodesMap.values().next().value;
-}
-
-export function getNodeForSearch(): any {
-  const s = getShoukaku();
-  return pickNode(s);
-}
-
-export function getGuildPlayer(guildId: string): Player | null {
-  return guildPlayers.get(guildId)?.player ?? null;
+  s.players.delete(guildId);
+  playerMeta.delete(guildId);
 }
 
 export async function joinOrGetPlayer(opts: {
@@ -85,61 +84,54 @@ export async function joinOrGetPlayer(opts: {
   channelId: string;
   shardId: number;
 }): Promise<Player> {
-  const s = getShoukaku();
+  const s = mustShoukaku();
 
-  const existing = guildPlayers.get(opts.guildId);
+  // If we already have a player, only treat it as stale if *we* previously stored a channelId
+  // and it differs. If meta is missing, DO NOT nuke it (this was your loop).
+  const existing = s.players.get(opts.guildId);
+  const meta = playerMeta.get(opts.guildId);
+
   if (existing) {
-    // Same channel? reuse.
-    if (existing.channelId === opts.channelId) return existing.player;
-
-    // Different channel → cleanly destroy and rejoin.
-    try {
-      await (existing.player as any).leaveVoiceChannel?.();
-    } catch {}
-    try {
-      existing.player.destroy();
-    } catch {}
-
-    guildPlayers.delete(opts.guildId);
+    if (meta && meta.channelId !== opts.channelId) {
+      console.log(
+        `[MUSIC] Existing player in different channel (have=${meta.channelId}, want=${opts.channelId}). Leaving...`,
+      );
+      leavePlayer(opts.guildId);
+    } else {
+      return existing;
+    }
   }
 
+  // Join fresh
   const player = await s.joinVoiceChannel({
     guildId: opts.guildId,
     channelId: opts.channelId,
     shardId: opts.shardId,
     deaf: false,
-  } as any);
-
-  guildPlayers.set(opts.guildId, {
-    player,
-    channelId: opts.channelId,
+    mute: false,
   });
 
-  // Default volume (v4 = setGlobalVolume)
-  try {
-    const ap = player as any;
-    if (typeof ap.setGlobalVolume === "function") {
-      await ap.setGlobalVolume(100);
-    } else if (typeof ap.setVolume === "function") {
-      await ap.setVolume(100);
-    } else if (typeof ap.update === "function") {
-      await ap.update({ volume: 100 });
-    }
-  } catch {}
-
+  playerMeta.set(opts.guildId, { channelId: opts.channelId });
   return player;
 }
 
-export async function leaveGuild(guildId: string): Promise<void> {
-  const st = guildPlayers.get(guildId);
-  if (!st) return;
+// Resolve helper used by /music play
+export async function resolveTracks(identifier: string) {
+  const node = mustShoukaku().getIdealNode(); // v4 API
+  const res = await node.rest.resolve(identifier);
 
-  try {
-    await (st.player as any).leaveVoiceChannel?.();
-  } catch {}
-  try {
-    st.player.destroy();
-  } catch {}
+  if (!res || res.loadType === LoadType.EMPTY || res.loadType === LoadType.ERROR) {
+    return { tracks: [], loadType: res?.loadType ?? LoadType.EMPTY };
+  }
 
-  guildPlayers.delete(guildId);
+  switch (res.loadType) {
+    case LoadType.TRACK:
+      return { tracks: res.data ? [res.data] : [], loadType: res.loadType };
+    case LoadType.PLAYLIST:
+      return { tracks: res.data?.tracks ?? [], loadType: res.loadType };
+    case LoadType.SEARCH:
+      return { tracks: res.data ?? [], loadType: res.loadType };
+    default:
+      return { tracks: [], loadType: res.loadType };
+  }
 }
