@@ -3,15 +3,10 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 
-// Prefer external DB_PATH (prod), fallback to repo-local data file (dev).
-// Trim so empty-string envs don't accidentally clobber the path.
-const envDbPath = process.env.DB_PATH?.trim();
 const dbPath =
-  envDbPath && envDbPath.length > 0
-    ? envDbPath
-    : path.join(process.cwd(), "data", "yak-yak-social.db");
+  process.env.DB_PATH ||
+  path.join(process.cwd(), "data", "yak-yak-social.db");
 
-// Ensure parent directory exists (safe for both absolute + relative paths)
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 const db = new Database(dbPath);
@@ -55,6 +50,12 @@ CREATE TABLE IF NOT EXISTS social_triggers (
   phrase         TEXT NOT NULL,
   delta          INTEGER NOT NULL,
   case_sensitive INTEGER NOT NULL DEFAULT 0
+);
+
+-- NEW: per-guild allowed channel for credit actions (steal/sabotage)
+CREATE TABLE IF NOT EXISTS credit_action_channels (
+  guild_id   TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL
 );
 `);
 
@@ -117,6 +118,31 @@ export function removeFunRole(guildId: string, roleId: string): void {
   db.prepare(
     "DELETE FROM role_gates WHERE guild_id = ? AND role_id = ?",
   ).run(guildId, roleId);
+}
+
+// -------- Credit action channel (steal/sabotage gate) --------
+
+export function getCreditActionChannel(guildId: string): string | null {
+  const row = db
+    .prepare(
+      "SELECT channel_id AS channelId FROM credit_action_channels WHERE guild_id = ?",
+    )
+    .get(guildId) as { channelId: string } | undefined;
+  return row?.channelId ?? null;
+}
+
+export function setCreditActionChannel(
+  guildId: string,
+  channelId: string,
+): void {
+  db.prepare(
+    `
+    INSERT INTO credit_action_channels (guild_id, channel_id)
+    VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      channel_id = excluded.channel_id
+  `,
+  ).run(guildId, channelId);
 }
 
 // -------- Scores / log / leaderboard --------
