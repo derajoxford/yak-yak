@@ -14,6 +14,8 @@ import {
   getTodayActivityTotal,
   getRecentLogForUser,
   getSabotageStatsSince,
+  getCreditActionChannel,
+  setCreditActionChannel,
 } from "../db/socialDb.js";
 
 function scoreLabel(score: number): string {
@@ -99,45 +101,6 @@ const STEAL_COOLDOWN_MS: number = Number(
 );
 // key: `${guildId}:${userId}` -> last steal timestamp
 const stealCooldown = new Map<string, number>();
-
-// ---- Action channel restriction ----
-
-// Optional env default. If set, steal/sabotage only run there unless admin changes it.
-// Example in env: CREDIT_ACTION_CHANNEL_ID=123456789012345678
-const ACTION_CHANNEL_ID_DEFAULT: string | null =
-  (process.env.CREDIT_ACTION_CHANNEL_ID as string | undefined) ?? null;
-
-// per-guild allowed channel for steal/sabotage (in-memory)
-const actionChannelByGuild = new Map<string, string>();
-
-function getActionChannelId(guildId: string): string | null {
-  return actionChannelByGuild.get(guildId) ?? ACTION_CHANNEL_ID_DEFAULT;
-}
-
-function isAdmin(interaction: ChatInputCommandInteraction): boolean {
-  const perms = interaction.memberPermissions;
-  if (!perms) return false;
-  return (
-    perms.has(PermissionFlagsBits.ManageGuild) ||
-    perms.has(PermissionFlagsBits.Administrator)
-  );
-}
-
-function enforceActionChannel(
-  interaction: ChatInputCommandInteraction,
-  guildId: string,
-): string | null {
-  const required = getActionChannelId(guildId);
-  if (!required) return null;
-
-  const chan: any = interaction.channel;
-  const allowed =
-    interaction.channelId === required ||
-    (chan?.isThread?.() && chan.parentId === required);
-
-  if (!allowed) return required;
-  return null;
-}
 
 export const data = new SlashCommandBuilder()
   .setName("credit")
@@ -230,21 +193,21 @@ export const data = new SlashCommandBuilder()
           .setMaxValue(25),
       ),
   )
-  // Admin: set allowed channel for steal/sabotage
   .addSubcommand((sub) =>
     sub
-      .setName("set_channel")
+      .setName("set_action_channel")
       .setDescription(
-        "Admin: set the only channel where steal/sabotage are allowed.",
+        "Set the only channel where /credit steal and /credit sabotage are allowed.",
       )
       .addChannelOption((opt) =>
         opt
           .setName("channel")
-          .setDescription(
-            "Allowed channel for /credit steal and /credit sabotage.",
+          .setDescription("Allowed channel for credit actions")
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement,
           )
-          .setRequired(true)
-          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+          .setRequired(true),
       ),
   );
 
@@ -262,28 +225,61 @@ export async function execute(
   const guildId = interaction.guildId;
   const sub = interaction.options.getSubcommand(true);
 
-  // ----- /credit set_channel (admin-only) -----
-  if (sub === "set_channel") {
-    if (!isAdmin(interaction)) {
+  // ----- /credit set_action_channel -----
+  if (sub === "set_action_channel") {
+    const channel = interaction.options.getChannel("channel", true);
+
+    const isAdmin =
+      interaction.memberPermissions?.has(
+        PermissionFlagsBits.ManageGuild,
+      ) ||
+      (process.env.OWNER_ID &&
+        interaction.user.id === process.env.OWNER_ID);
+
+    if (!isAdmin) {
       await interaction.reply({
-        content: "You don’t have permission to set the actions channel.",
+        content:
+          "Only server admins (Manage Server) can set the credit action channel.",
         ephemeral: true,
       });
       return;
     }
 
-    const channel = interaction.options.getChannel("channel", true);
-    actionChannelByGuild.set(guildId, channel.id);
+    setCreditActionChannel(guildId, channel.id);
 
     const embed = new EmbedBuilder()
-      .setTitle("✅ Actions Channel Set")
+      .setTitle("✅ Credit Action Channel Set")
       .setDescription(
-        `Steal & sabotage are now restricted to ${channel}.`,
+        `Steal and sabotage are now restricted to <#${channel.id}>.`,
       )
-      .setFooter({ text: "Social Credit Bureau" });
+      .setFooter({ text: "Yak Yak Social Credit Bureau" });
 
     await interaction.reply({ embeds: [embed], ephemeral: true });
     return;
+  }
+
+  // helper: enforce channel for steal/sabotage
+  async function enforceActionChannel(): Promise<boolean> {
+    const actionChannelId = getCreditActionChannel(guildId);
+
+    if (!actionChannelId) {
+      await interaction.reply({
+        content:
+          "Credit actions aren’t configured yet. An admin must run `/credit set_action_channel #channel` first.",
+        ephemeral: true,
+      });
+      return false;
+    }
+
+    if (interaction.channelId !== actionChannelId) {
+      await interaction.reply({
+        content: `Steal and sabotage only work in <#${actionChannelId}>.`,
+        ephemeral: true,
+      });
+      return false;
+    }
+
+    return true;
   }
 
   // ----- /credit show -----
@@ -360,18 +356,10 @@ export async function execute(
 
   // ----- /credit steal -----
   if (sub === "steal") {
+    if (!(await enforceActionChannel())) return;
+
     const thief = interaction.user;
     const target = interaction.options.getUser("target", true);
-
-    // Channel restriction check
-    const blockedChannelId = enforceActionChannel(interaction, guildId);
-    if (blockedChannelId) {
-      await interaction.reply({
-        content: `Steal is only allowed in <#${blockedChannelId}>.`,
-        ephemeral: true,
-      });
-      return;
-    }
 
     if (target.bot) {
       await interaction.reply({
@@ -471,18 +459,10 @@ export async function execute(
 
   // ----- /credit sabotage -----
   if (sub === "sabotage") {
+    if (!(await enforceActionChannel())) return;
+
     const attacker = interaction.user;
     const target = interaction.options.getUser("target", true);
-
-    // Channel restriction check
-    const blockedChannelId = enforceActionChannel(interaction, guildId);
-    if (blockedChannelId) {
-      await interaction.reply({
-        content: `Sabotage is only allowed in <#${blockedChannelId}>.`,
-        ephemeral: true,
-      });
-      return;
-    }
 
     if (target.bot) {
       await interaction.reply({
@@ -495,7 +475,7 @@ export async function execute(
     if (target.id === attacker.id) {
       await interaction.reply({
         content:
-          "You’re trying to sabotage **yourself** are you mildly retarded? Even James Bond didn’t do that. Pick a different target.",
+          "You’re trying to sabotage **yourself**. Even James Bond didn’t do that. Pick a different target.",
         ephemeral: true,
       });
       return;
@@ -509,7 +489,7 @@ export async function execute(
     if (elapsed < SABOTAGE_COOLDOWN_MS) {
       const remainingMs = SABOTAGE_COOLDOWN_MS - elapsed;
       await interaction.reply({
-        content: `You recently attempted sabotage This isn't a race dumbass. Cooldown remaining: **${formatCooldown(
+        content: `You recently attempted sabotage. Cooldown remaining: **${formatCooldown(
           remainingMs,
         )}**.`,
         ephemeral: true,
