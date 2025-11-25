@@ -3,10 +3,15 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 
+// Prefer external DB_PATH (prod), fallback to repo-local data file (dev).
+// Trim so empty-string envs don't accidentally clobber the path.
+const envDbPath = process.env.DB_PATH?.trim();
 const dbPath =
-  process.env.DB_PATH ||
-  path.join(process.cwd(), "data", "yak-yak-social.db");
+  envDbPath && envDbPath.length > 0
+    ? envDbPath
+    : path.join(process.cwd(), "data", "yak-yak-social.db");
 
+// Ensure parent directory exists (safe for both absolute + relative paths)
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 const db = new Database(dbPath);
