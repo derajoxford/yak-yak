@@ -3,6 +3,8 @@ import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   EmbedBuilder,
+  PermissionFlagsBits,
+  ChannelType,
 } from "discord.js";
 import {
   getScore,
@@ -98,6 +100,45 @@ const STEAL_COOLDOWN_MS: number = Number(
 // key: `${guildId}:${userId}` -> last steal timestamp
 const stealCooldown = new Map<string, number>();
 
+// ---- Action channel restriction ----
+
+// Optional env default. If set, steal/sabotage only run there unless admin changes it.
+// Example in env: CREDIT_ACTION_CHANNEL_ID=123456789012345678
+const ACTION_CHANNEL_ID_DEFAULT: string | null =
+  (process.env.CREDIT_ACTION_CHANNEL_ID as string | undefined) ?? null;
+
+// per-guild allowed channel for steal/sabotage (in-memory)
+const actionChannelByGuild = new Map<string, string>();
+
+function getActionChannelId(guildId: string): string | null {
+  return actionChannelByGuild.get(guildId) ?? ACTION_CHANNEL_ID_DEFAULT;
+}
+
+function isAdmin(interaction: ChatInputCommandInteraction): boolean {
+  const perms = interaction.memberPermissions;
+  if (!perms) return false;
+  return (
+    perms.has(PermissionFlagsBits.ManageGuild) ||
+    perms.has(PermissionFlagsBits.Administrator)
+  );
+}
+
+function enforceActionChannel(
+  interaction: ChatInputCommandInteraction,
+  guildId: string,
+): string | null {
+  const required = getActionChannelId(guildId);
+  if (!required) return null;
+
+  const chan: any = interaction.channel;
+  const allowed =
+    interaction.channelId === required ||
+    (chan?.isThread?.() && chan.parentId === required);
+
+  if (!allowed) return required;
+  return null;
+}
+
 export const data = new SlashCommandBuilder()
   .setName("credit")
   .setDescription("Check and play with your Social Credit.")
@@ -188,6 +229,23 @@ export const data = new SlashCommandBuilder()
           .setMinValue(1)
           .setMaxValue(25),
       ),
+  )
+  // Admin: set allowed channel for steal/sabotage
+  .addSubcommand((sub) =>
+    sub
+      .setName("set_channel")
+      .setDescription(
+        "Admin: set the only channel where steal/sabotage are allowed.",
+      )
+      .addChannelOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription(
+            "Allowed channel for /credit steal and /credit sabotage.",
+          )
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+      ),
   );
 
 export async function execute(
@@ -203,6 +261,30 @@ export async function execute(
 
   const guildId = interaction.guildId;
   const sub = interaction.options.getSubcommand(true);
+
+  // ----- /credit set_channel (admin-only) -----
+  if (sub === "set_channel") {
+    if (!isAdmin(interaction)) {
+      await interaction.reply({
+        content: "You don’t have permission to set the actions channel.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channel = interaction.options.getChannel("channel", true);
+    actionChannelByGuild.set(guildId, channel.id);
+
+    const embed = new EmbedBuilder()
+      .setTitle("✅ Actions Channel Set")
+      .setDescription(
+        `Steal & sabotage are now restricted to ${channel}.`,
+      )
+      .setFooter({ text: "Social Credit Bureau" });
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return;
+  }
 
   // ----- /credit show -----
   if (sub === "show") {
@@ -280,6 +362,16 @@ export async function execute(
   if (sub === "steal") {
     const thief = interaction.user;
     const target = interaction.options.getUser("target", true);
+
+    // Channel restriction check
+    const blockedChannelId = enforceActionChannel(interaction, guildId);
+    if (blockedChannelId) {
+      await interaction.reply({
+        content: `Steal is only allowed in <#${blockedChannelId}>.`,
+        ephemeral: true,
+      });
+      return;
+    }
 
     if (target.bot) {
       await interaction.reply({
@@ -381,6 +473,16 @@ export async function execute(
   if (sub === "sabotage") {
     const attacker = interaction.user;
     const target = interaction.options.getUser("target", true);
+
+    // Channel restriction check
+    const blockedChannelId = enforceActionChannel(interaction, guildId);
+    if (blockedChannelId) {
+      await interaction.reply({
+        content: `Sabotage is only allowed in <#${blockedChannelId}>.`,
+        ephemeral: true,
+      });
+      return;
+    }
 
     if (target.bot) {
       await interaction.reply({
