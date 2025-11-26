@@ -591,58 +591,60 @@ export async function execute(
       )}** in Social Credit prison (no more heists until <t:${untilSec}:R>).`;
     }
 
-    const embed = new EmbedBuilder()
+    const stealLines: string[] = [];
+    stealLines.push(`🎲 Roll: **${roll}** — **${outcomeLabel}**`);
+    stealLines.push("");
+    if (victimDelta < 0 && thiefDelta > 0) {
+      const amount = Math.abs(victimDelta);
+      stealLines.push(
+        `${thief} stole **${amount}** Social Credit from ${target}.`,
+      );
+      stealLines.push("");
+      stealLines.push(
+        `**${target.username}**: ${victimBefore} → ${victimAfter}`,
+      );
+      stealLines.push(
+        `**${thief.username}**: ${thiefBefore} → ${thiefAfter}`,
+      );
+    } else if (thiefDelta < 0 && victimDelta === 0) {
+      const fine = Math.abs(thiefDelta);
+      stealLines.push(
+        `${thief} got caught trying to rob ${target} and was fined **${fine}** Social Credit.`,
+      );
+      stealLines.push("");
+      stealLines.push(
+        `**${thief.username}**: ${thiefBefore} → ${thiefAfter}`,
+      );
+    } else {
+      // Pure fizzle (no DB change)
+      stealLines.push(
+        `${thief} attempts a heist on ${target}… and absolutely nothing happens.`,
+      );
+      stealLines.push("");
+      stealLines.push(
+        `**${target.username}**: ${victimScoreBefore} → ${victimScoreBefore}`,
+      );
+      stealLines.push(
+        `**${thief.username}**: ${thiefScoreBefore} → ${thiefScoreBefore}`,
+      );
+    }
+    stealLines.push("");
+    stealLines.push(outcomeFlavor);
+    if (prisonNote) stealLines.push(prisonNote);
+
+    const stealDesc = stealLines.join("\n");
+
+    const stealColor =
+      thiefDelta < 0
+        ? 0xff5555 // big L
+        : victimDelta < 0
+          ? 0xffc857 // successful steal
+          : 0x9ca3af; // nothingburger
+
+    const stealEmbed = new EmbedBuilder()
       .setTitle("🕵️ Social Credit Heist")
-      .setDescription(() => {
-        const lines: string[] = [];
-        lines.push(`🎲 Roll: **${roll}** — **${outcomeLabel}**`);
-        lines.push("");
-        if (victimDelta < 0 && thiefDelta > 0) {
-          const amount = Math.abs(victimDelta);
-          lines.push(
-            `${thief} stole **${amount}** Social Credit from ${target}.`,
-          );
-          lines.push("");
-          lines.push(
-            `**${target.username}**: ${victimBefore} → ${victimAfter}`,
-          );
-          lines.push(
-            `**${thief.username}**: ${thiefBefore} → ${thiefAfter}`,
-          );
-        } else if (thiefDelta < 0 && victimDelta === 0) {
-          const fine = Math.abs(thiefDelta);
-          lines.push(
-            `${thief} got caught trying to rob ${target} and was fined **${fine}** Social Credit.`,
-          );
-          lines.push("");
-          lines.push(
-            `**${thief.username}**: ${thiefBefore} → ${thiefAfter}`,
-          );
-        } else {
-          // Pure fizzle (no DB change)
-          lines.push(
-            `${thief} attempts a heist on ${target}… and absolutely nothing happens.`,
-          );
-          lines.push("");
-          lines.push(
-            `**${target.username}**: ${victimScoreBefore} → ${victimScoreBefore}`,
-          );
-          lines.push(
-            `**${thief.username}**: ${thiefScoreBefore} → ${thiefScoreBefore}`,
-          );
-        }
-        lines.push("");
-        lines.push(outcomeFlavor);
-        if (prisonNote) lines.push(prisonNote);
-        return lines.join("\n");
-      })
-      .setColor(
-        thiefDelta < 0
-          ? 0xff5555 // big L
-          : victimDelta < 0
-            ? 0xffc857 // successful steal
-            : 0x9ca3af, // nothingburger
-      )
+      .setDescription(stealDesc)
+      .setColor(stealColor)
       .setFooter({ text: "Crime always pays… until it doesn’t." });
 
     // Heist gif: prefer negative (victim pain), fallback positive
@@ -650,10 +652,10 @@ export async function execute(
       getRandomGif(guildId, "negative") ??
       getRandomGif(guildId, "positive");
     if (heistGif) {
-      embed.setImage(heistGif);
+      stealEmbed.setImage(heistGif);
     }
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply({ embeds: [stealEmbed] });
     return;
   }
 
@@ -881,53 +883,55 @@ export async function execute(
       )}** sentence for reckless sabotage (no more sabotage until <t:${untilSec}:R>).`;
     }
 
-    const embed = new EmbedBuilder()
+    const sabLines: string[] = [];
+    sabLines.push(`🎲 Roll: **${roll}** — **${outcomeLabel}**`);
+    sabLines.push("");
+    sabLines.push(`${attacker} attempts to **sabotage** ${target}.`);
+    sabLines.push("");
+
+    const changes: string[] = [];
+
+    if (targetDelta !== 0) {
+      const deltaStr = targetDelta > 0 ? `+${targetDelta}` : `${targetDelta}`;
+      changes.push(
+        `**Target change:** ${deltaStr}\n` +
+          `**${target.username}**: ${targetBefore} → ${targetAfter}`,
+      );
+    } else {
+      changes.push(
+        `**${target.username}**: ${targetBefore} → ${targetAfter} (no meaningful change)`,
+      );
+    }
+
+    if (attackerDelta !== 0) {
+      const diff = attackerAfter - attackerBefore;
+      const diffStr = diff >= 0 ? `+${diff}` : `${diff}`;
+      changes.push(
+        `**${attacker.username}**: ${attackerBefore} → ${attackerAfter} (${diffStr})`,
+      );
+    } else {
+      changes.push(
+        `**${attacker.username}**: ${attackerBefore} → ${attackerAfter}`,
+      );
+    }
+
+    sabLines.push(changes.join("\n"));
+    sabLines.push("");
+    sabLines.push(outcomeFlavor);
+    if (prisonNote) sabLines.push(prisonNote);
+
+    const sabDesc = sabLines.join("\n");
+
+    let sabColor: number;
+    if (attackerDelta < 0 && targetDelta < 0) sabColor = 0x991b1b; // mutual destruction
+    else if (targetDelta < 0) sabColor = 0xf97316; // successful hit
+    else if (attackerDelta < 0) sabColor = 0xef4444; // pure self-own
+    else sabColor = 0x9ca3af; // fizzle/neutral
+
+    const sabEmbed = new EmbedBuilder()
       .setTitle("🧨 Social Credit Sabotage")
-      .setDescription(() => {
-        const lines: string[] = [];
-        lines.push(`🎲 Roll: **${roll}** — **${outcomeLabel}**`);
-        lines.push("");
-        lines.push(`${attacker} attempts to **sabotage** ${target}.`);
-        lines.push("");
-
-        const changes: string[] = [];
-
-        if (targetDelta !== 0) {
-          const deltaStr = targetDelta > 0 ? `+${targetDelta}` : `${targetDelta}`;
-          changes.push(
-            `**Target change:** ${deltaStr}\n` +
-              `**${target.username}**: ${targetBefore} → ${targetAfter}`,
-          );
-        } else {
-          changes.push(
-            `**${target.username}**: ${targetBefore} → ${targetAfter} (no meaningful change)`,
-          );
-        }
-
-        if (attackerDelta !== 0) {
-          const diff = attackerAfter - attackerBefore;
-          const diffStr = diff >= 0 ? `+${diff}` : `${diff}`;
-          changes.push(
-            `**${attacker.username}**: ${attackerBefore} → ${attackerAfter} (${diffStr})`,
-          );
-        } else {
-          changes.push(
-            `**${attacker.username}**: ${attackerBefore} → ${attackerAfter}`,
-          );
-        }
-
-        lines.push(changes.join("\n"));
-        lines.push("");
-        lines.push(outcomeFlavor);
-        if (prisonNote) lines.push(prisonNote);
-        return lines.join("\n");
-      })
-      .setColor(() => {
-        if (attackerDelta < 0 && targetDelta < 0) return 0x991b1b; // mutual destruction
-        if (targetDelta < 0) return 0xf97316; // successful hit
-        if (attackerDelta < 0) return 0xef4444; // pure self-own
-        return 0x9ca3af; // fizzle/neutral
-      })
+      .setDescription(sabDesc)
+      .setColor(sabColor)
       .setFooter({ text: "Chaos is a sacred ritual." });
 
     const sabotageGif =
@@ -935,10 +939,10 @@ export async function execute(
       getRandomGif(guildId, "negative") ??
       getRandomGif(guildId, "positive");
     if (sabotageGif) {
-      embed.setImage(sabotageGif);
+      sabEmbed.setImage(sabotageGif);
     }
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply({ embeds: [sabEmbed] });
     return;
   }
 
