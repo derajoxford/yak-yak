@@ -238,6 +238,40 @@ export const data = new SlashCommandBuilder()
           )
           .setRequired(true),
       ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("court")
+      .setDescription(
+        "Summon someone to the High Court: fine and/or timeout their credit crimes.",
+      )
+      .addUserOption((opt) =>
+        opt
+          .setName("target")
+          .setDescription("Defendant to punish.")
+          .setRequired(true),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName("fine")
+          .setDescription(
+            "Social Credit fine to deduct (positive number, e.g. 100).",
+          )
+          .setMinValue(1),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName("timeout_minutes")
+          .setDescription(
+            "Block this user from /credit steal and /credit sabotage for this many minutes.",
+          )
+          .setMinValue(1),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("reason")
+          .setDescription("Reason for the High Court punishment."),
+      ),
   );
 
 export async function execute(
@@ -254,16 +288,16 @@ export async function execute(
   const guildId = interaction.guildId;
   const sub = interaction.options.getSubcommand(true);
 
+  const isAdmin =
+    interaction.memberPermissions?.has(
+      PermissionFlagsBits.ManageGuild,
+    ) ||
+    (process.env.OWNER_ID &&
+      interaction.user.id === process.env.OWNER_ID);
+
   // ----- /credit set_action_channel -----
   if (sub === "set_action_channel") {
     const channel = interaction.options.getChannel("channel", true);
-
-    const isAdmin =
-      interaction.memberPermissions?.has(
-        PermissionFlagsBits.ManageGuild,
-      ) ||
-      (process.env.OWNER_ID &&
-        interaction.user.id === process.env.OWNER_ID);
 
     if (!isAdmin) {
       await interaction.reply({
@@ -284,6 +318,163 @@ export async function execute(
       .setFooter({ text: "Yak Yak Social Credit Bureau" });
 
     await interaction.reply({ embeds: [embed], ephemeral: true });
+    return;
+  }
+
+  // ----- /credit court (High Court admin punishments) -----
+  if (sub === "court") {
+    if (!isAdmin) {
+      await interaction.reply({
+        content:
+          "Only the High Court (server admins) may issue Social Credit sentences.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const target = interaction.options.getUser("target", true);
+    const fineOpt = interaction.options.getInteger("fine");
+    const timeoutMinutesOpt =
+      interaction.options.getInteger("timeout_minutes");
+    const reasonOpt = interaction.options.getString("reason") ?? null;
+
+    if (target.bot) {
+      await interaction.reply({
+        content: "You can't put a bot on trial. They are already soulless.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (!fineOpt && !timeoutMinutesOpt) {
+      await interaction.reply({
+        content:
+          "You must specify at least a **fine** or a **timeout_minutes** value.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    let fineApplied = 0;
+    let scoreBefore: number | null = null;
+    let scoreAfter: number | null = null;
+
+    if (fineOpt && fineOpt > 0) {
+      const fineAmount = Math.abs(fineOpt);
+      const result = adjustScore(
+        guildId,
+        interaction.user.id,
+        target.id,
+        -fineAmount,
+        reasonOpt
+          ? `High Court fine: ${reasonOpt}`
+          : "High Court fine",
+      );
+      fineApplied = fineAmount;
+      scoreBefore = result.previous;
+      scoreAfter = result.current;
+    }
+
+    let timeoutText = "No action timeout applied";
+    let bannedUntilSec: number | null = null;
+
+    if (timeoutMinutesOpt && timeoutMinutesOpt > 0) {
+      const ms = timeoutMinutesOpt * 60_000;
+      const until = Date.now() + ms;
+      bannedUntilSec = Math.floor(until / 1000);
+      const key = `${guildId}:${target.id}`;
+      // Lock out both steal and sabotage
+      stealPrison.set(key, until);
+      sabotagePrison.set(key, until);
+      timeoutText = `${timeoutMinutesOpt} minutes\nRestricted until <t:${bannedUntilSec}:R>`;
+    }
+
+    const guildName = interaction.guild?.name ?? "this server";
+
+    const embed = new EmbedBuilder()
+      .setTitle("⚖️ High Court of Social Credit")
+      .setDescription(
+        `${target} has been **summoned to the High Court for Social Credit fraud**.\n\n` +
+          `Verdict delivered by ${interaction.user} in **${guildName}**.`,
+      )
+      .setColor(0xdc2626)
+      .setFooter({
+        text: "All sentences are final. Appeals may be laughed at.",
+      });
+
+    const fields: {
+      name: string;
+      value: string;
+      inline?: boolean;
+    }[] = [];
+
+    fields.push({
+      name: "Defendant",
+      value: `${target} \`(${target.tag})\``,
+      inline: true,
+    });
+
+    if (fineApplied > 0) {
+      const scoreLine =
+        scoreBefore !== null && scoreAfter !== null
+          ? `\`${scoreBefore} → ${scoreAfter}\``
+          : "";
+      fields.push({
+        name: "Fine",
+        value: `-${fineApplied} Social Credit ${scoreLine}`,
+        inline: true,
+      });
+    } else {
+      fields.push({
+        name: "Fine",
+        value: "None applied",
+        inline: true,
+      });
+    }
+
+    fields.push({
+      name: "Timeout",
+      value: timeoutText,
+      inline: true,
+    });
+
+    if (reasonOpt) {
+      fields.push({
+        name: "Charge Sheet",
+        value: reasonOpt,
+        inline: false,
+      });
+    }
+
+    embed.addFields(fields);
+
+    const courtGif =
+      getRandomGif(guildId, "negative") ??
+      getRandomGif(guildId, "sabotage") ??
+      getRandomGif(guildId, "positive");
+    if (courtGif) {
+      embed.setImage(courtGif);
+    }
+
+    // Reply in the channel
+    await interaction.reply({ embeds: [embed] });
+
+    // DM the defendant with a slightly tweaked version
+    try {
+      const dmEmbed = EmbedBuilder.from(embed)
+        .setDescription(
+          `You have been **summoned to the High Court for Social Credit fraud** in **${guildName}**.\n\n` +
+            `Presiding officer: ${interaction.user}`,
+        )
+        .setFooter({
+          text: "This is an official notice from the Yak Yak Social Credit Bureau.",
+        });
+
+      await target.send({ embeds: [dmEmbed] });
+    } catch {
+      // user has DMs closed, ignore
+    }
+
     return;
   }
 
