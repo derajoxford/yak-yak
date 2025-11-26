@@ -928,4 +928,104 @@ export async function execute(
         if (attackerDelta < 0) return 0xef4444; // pure self-own
         return 0x9ca3af; // fizzle/neutral
       })
-      .setFooter({ text: "Chaos is a sacred
+      .setFooter({ text: "Chaos is a sacred ritual." });
+
+    const sabotageGif =
+      getRandomGif(guildId, "sabotage") ??
+      getRandomGif(guildId, "negative") ??
+      getRandomGif(guildId, "positive");
+    if (sabotageGif) {
+      embed.setImage(sabotageGif);
+    }
+
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+
+  // ----- /credit rapsheet -----
+  if (sub === "rapsheet") {
+    const target =
+      interaction.options.getUser("target") ?? interaction.user;
+    const limit = interaction.options.getInteger("limit") ?? 10;
+
+    const entries = getRecentLogForUser(guildId, target.id, limit);
+
+    if (entries.length === 0) {
+      await interaction.reply({
+        content: `${target} has no Social Credit history yet.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const lines = entries.map((entry) => {
+      const deltaStr =
+        entry.delta > 0 ? `+${entry.delta}` : `${entry.delta}`;
+      const actor =
+        entry.actorId != null
+          ? `<@${entry.actorId}>`
+          : "System / Auto";
+      const reason = entry.reason ?? "No reason recorded";
+      const ts = entry.createdAt; // seconds
+      const timeTag = `<t:${ts}:R>`; // "x minutes ago"
+
+      return `• ${timeTag} — **${deltaStr}** (${reason}) · by ${actor}`;
+    });
+
+    const embed = new EmbedBuilder()
+      .setTitle("📂 Social Credit Rap Sheet")
+      .setDescription(lines.join("\n"))
+      .setFooter({
+        text: `Showing last ${entries.length} events for ${
+          target.tag ?? target.username
+        }`,
+      });
+
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+
+  // ----- /credit most_sabotaged -----
+  if (sub === "most_sabotaged") {
+    const limit = interaction.options.getInteger("limit") ?? 10;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const weekAgo = nowSec - 7 * 24 * 60 * 60;
+
+    const rows = getSabotageStatsSince(guildId, weekAgo, limit);
+
+    if (rows.length === 0) {
+      await interaction.reply({
+        content:
+          "No sabotage events recorded in the last 7 days. The clan has been… unusually calm.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const lines = rows.map((row, idx) => {
+      const rank = idx + 1;
+      let badge: string;
+      if (rank === 1) badge = "🥇";
+      else if (rank === 2) badge = "🥈";
+      else if (rank === 3) badge = "🥉";
+      else badge = `#${rank}`;
+
+      const netStr =
+        row.netDelta > 0
+          ? `+${row.netDelta}`
+          : `${row.netDelta}`;
+
+      return `${badge} <@${row.targetId}> — sabotaged **${row.hits}** times, lost **${row.totalLoss}** (net: ${netStr})`;
+    });
+
+    const embed = new EmbedBuilder()
+      .setTitle("🧨 Most Sabotaged — Last 7 Days")
+      .setDescription(lines.join("\n"))
+      .setFooter({
+        text: "Window: last 7 days · Based on Sabotage events only",
+      });
+
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+}
