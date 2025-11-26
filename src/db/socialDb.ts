@@ -52,10 +52,19 @@ CREATE TABLE IF NOT EXISTS social_triggers (
   case_sensitive INTEGER NOT NULL DEFAULT 0
 );
 
--- NEW: per-guild allowed channel for credit actions (steal/sabotage)
-CREATE TABLE IF NOT EXISTS credit_action_channels (
-  guild_id   TEXT PRIMARY KEY,
-  channel_id TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS credit_settings (
+  guild_id          TEXT PRIMARY KEY,
+  action_channel_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS credit_penalties (
+  guild_id     TEXT NOT NULL,
+  user_id      TEXT NOT NULL,
+  banned_until INTEGER NOT NULL,
+  reason       TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, user_id)
 );
 `);
 
@@ -118,31 +127,6 @@ export function removeFunRole(guildId: string, roleId: string): void {
   db.prepare(
     "DELETE FROM role_gates WHERE guild_id = ? AND role_id = ?",
   ).run(guildId, roleId);
-}
-
-// -------- Credit action channel (steal/sabotage gate) --------
-
-export function getCreditActionChannel(guildId: string): string | null {
-  const row = db
-    .prepare(
-      "SELECT channel_id AS channelId FROM credit_action_channels WHERE guild_id = ?",
-    )
-    .get(guildId) as { channelId: string } | undefined;
-  return row?.channelId ?? null;
-}
-
-export function setCreditActionChannel(
-  guildId: string,
-  channelId: string,
-): void {
-  db.prepare(
-    `
-    INSERT INTO credit_action_channels (guild_id, channel_id)
-    VALUES (?, ?)
-    ON CONFLICT(guild_id) DO UPDATE SET
-      channel_id = excluded.channel_id
-  `,
-  ).run(guildId, channelId);
 }
 
 // -------- Scores / log / leaderboard --------
@@ -325,6 +309,95 @@ export function getSabotageStatsSince(
     .all(guildId, since, limit) as SabotageStatRow[];
 
   return rows;
+}
+
+// -------- Credit action channel --------
+
+export function getCreditActionChannel(guildId: string): string | null {
+  const row = db
+    .prepare(
+      `
+      SELECT action_channel_id
+      FROM credit_settings
+      WHERE guild_id = ?
+    `,
+    )
+    .get(guildId) as { action_channel_id: string } | undefined;
+
+  return row?.action_channel_id ?? null;
+}
+
+export function setCreditActionChannel(
+  guildId: string,
+  channelId: string,
+): void {
+  db.prepare(
+    `
+    INSERT INTO credit_settings (guild_id, action_channel_id)
+    VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      action_channel_id = excluded.action_channel_id
+  `,
+  ).run(guildId, channelId);
+}
+
+// -------- Credit penalties (High Court) --------
+
+export interface CreditPenalty {
+  userId: string;
+  bannedUntil: number;
+  reason: string | null;
+}
+
+export function setCreditPenalty(
+  guildId: string,
+  userId: string,
+  bannedUntil: number | null,
+  reason: string | null,
+): void {
+  if (!bannedUntil || bannedUntil <= 0) {
+    db.prepare(
+      `
+      DELETE FROM credit_penalties
+      WHERE guild_id = ? AND user_id = ?
+    `,
+    ).run(guildId, userId);
+    return;
+  }
+
+  const ts = now();
+  db.prepare(
+    `
+    INSERT INTO credit_penalties (guild_id, user_id, banned_until, reason, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+      banned_until = excluded.banned_until,
+      reason       = excluded.reason,
+      updated_at   = excluded.updated_at
+  `,
+  ).run(guildId, userId, bannedUntil, reason, ts, ts);
+}
+
+export function getCreditPenalty(
+  guildId: string,
+  userId: string,
+): CreditPenalty | null {
+  const row = db
+    .prepare(
+      `
+      SELECT
+        user_id      AS userId,
+        banned_until AS bannedUntil,
+        reason
+      FROM credit_penalties
+      WHERE guild_id = ? AND user_id = ?
+    `,
+    )
+    .get(guildId, userId) as
+    | { userId: string; bannedUntil: number; reason: string | null }
+    | undefined;
+
+  return row ?? null;
 }
 
 // -------- GIF pools --------
