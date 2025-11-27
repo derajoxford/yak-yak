@@ -11,12 +11,22 @@ import {
   getLeaderboard,
   adjustScore,
   getRandomGif,
-  getTodayActivityTotal,
   getRecentLogForUser,
   getSabotageStatsSince,
   getCreditActionChannel,
   setCreditActionChannel,
+  createCase,
+  getCaseById,
+  listCases,
+  setCaseVerdict,
 } from "../db/socialDb.js";
+
+type VerdictChoice =
+  | "guilty"
+  | "not_guilty"
+  | "frivolous"
+  | "mutual_mess"
+  | "declined";
 
 function scoreLabel(score: number): string {
   // Perfectly neutral
@@ -84,10 +94,24 @@ function formatCooldown(msRemaining: number): string {
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
+function verdictHumanLabel(v: VerdictChoice): string {
+  switch (v) {
+    case "guilty":
+      return "Guilty";
+    case "not_guilty":
+      return "Not Guilty";
+    case "frivolous":
+      return "Frivolous Complaint";
+    case "mutual_mess":
+      return "Mutual Mess";
+    case "declined":
+      return "Declined";
+  }
+}
+
 // ---- Cooldowns ----
 
 // Per-user sabotage cooldown (ms). Default 5 minutes.
-// You *can* override with CREDIT_SABOTAGE_COOLDOWN_MS in .env.local if you want.
 const SABOTAGE_COOLDOWN_MS: number = Number(
   process.env.CREDIT_SABOTAGE_COOLDOWN_MS ?? "300000",
 );
@@ -95,7 +119,6 @@ const SABOTAGE_COOLDOWN_MS: number = Number(
 const sabotageCooldown = new Map<string, number>();
 
 // Per-user steal cooldown (ms). Default 5 minutes.
-// Optional override: CREDIT_STEAL_COOLDOWN_MS
 const STEAL_COOLDOWN_MS: number = Number(
   process.env.CREDIT_STEAL_COOLDOWN_MS ?? "300000",
 );
@@ -129,6 +152,32 @@ function checkPrison(
   const remainingMs = until - now;
   const untilSec = Math.floor(until / 1000);
   return { locked: true, remainingMs, untilSec };
+}
+
+function addPrisonTime(
+  map: Map<string, number>,
+  key: string,
+  extraMs: number,
+): number {
+  const now = Date.now();
+  const current = map.get(key) ?? 0;
+  const base = current > now ? current : now;
+  const until = base + extraMs;
+  map.set(key, until);
+  return until;
+}
+
+async function safeSendDm(
+  interaction: ChatInputCommandInteraction,
+  userId: string,
+  embed: EmbedBuilder,
+): Promise<void> {
+  try {
+    const user = await interaction.client.users.fetch(userId);
+    await user.send({ embeds: [embed] });
+  } catch {
+    // ignore DM failures
+  }
 }
 
 export const data = new SlashCommandBuilder()
@@ -241,36 +290,146 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub
-      .setName("court")
-      .setDescription(
-        "Summon someone to the High Court: fine and/or timeout their credit crimes.",
-      )
+      .setName("sue")
+      .setDescription("File a Social Credit lawsuit against another member.")
       .addUserOption((opt) =>
         opt
-          .setName("target")
-          .setDescription("Defendant to punish.")
+          .setName("defendant")
+          .setDescription("Who are you suing?")
           .setRequired(true),
-      )
-      .addIntegerOption((opt) =>
-        opt
-          .setName("fine")
-          .setDescription(
-            "Social Credit fine to deduct (positive number, e.g. 100).",
-          )
-          .setMinValue(1),
-      )
-      .addIntegerOption((opt) =>
-        opt
-          .setName("timeout_minutes")
-          .setDescription(
-            "Block this user from /credit steal and /credit sabotage for this many minutes.",
-          )
-          .setMinValue(1),
       )
       .addStringOption((opt) =>
         opt
-          .setName("reason")
-          .setDescription("Reason for the High Court punishment."),
+          .setName("charge")
+          .setDescription("Short description of the charge.")
+          .setRequired(true),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("details")
+          .setDescription("Longer details / lore for the case.")
+          .setMaxLength(1000),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName("requested_fine")
+          .setDescription("Requested Social Credit fine (optional)."),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName("requested_sentence_min")
+          .setDescription(
+            "Requested prison time in minutes (optional – locks heist/sabotage).",
+          ),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("docket")
+      .setDescription(
+        "View the High Court docket (judge only; filtered list of cases).",
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("status")
+          .setDescription("Which cases to view")
+          .addChoices(
+            { name: "Open", value: "open" },
+            { name: "Closed", value: "closed" },
+            { name: "All", value: "all" },
+          ),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName("limit")
+          .setDescription("How many cases to show (1–25, default 10).")
+          .setMinValue(1)
+          .setMaxValue(25),
+      ),
+  )
+  .addSubcommandGroup((group) =>
+    group
+      .setName("case")
+      .setDescription("High Court tools (judge only).")
+      .addSubcommand((sub) =>
+        sub
+          .setName("info")
+          .setDescription("View details of a Social Credit case.")
+          .addIntegerOption((opt) =>
+            opt
+              .setName("case_id")
+              .setDescription("The case number.")
+              .setRequired(true),
+          ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("verdict")
+          .setDescription(
+            "Issue a High Court verdict (fines / prison / decline).",
+          )
+          .addIntegerOption((opt) =>
+            opt
+              .setName("case_id")
+              .setDescription("The case number.")
+              .setRequired(true),
+          )
+          .addStringOption((opt) =>
+            opt
+              .setName("verdict")
+              .setDescription("Type of verdict.")
+              .setRequired(true)
+              .addChoices(
+                { name: "Guilty", value: "guilty" },
+                { name: "Not guilty (no penalties)", value: "not_guilty" },
+                {
+                  name: "Frivolous (punish plaintiff)",
+                  value: "frivolous",
+                },
+                {
+                  name: "Mutual mess (hit both)",
+                  value: "mutual_mess",
+                },
+                {
+                  name: "Declined (case not heard)",
+                  value: "declined",
+                },
+              ),
+          )
+          .addIntegerOption((opt) =>
+            opt
+              .setName("fine_defendant")
+              .setDescription(
+                "Social Credit fine for defendant (positive number).",
+              ),
+          )
+          .addIntegerOption((opt) =>
+            opt
+              .setName("fine_plaintiff")
+              .setDescription(
+                "Social Credit fine for plaintiff (positive number).",
+              ),
+          )
+          .addIntegerOption((opt) =>
+            opt
+              .setName("prison_defendant_min")
+              .setDescription(
+                "Prison minutes for defendant (locks heist/sabotage).",
+              ),
+          )
+          .addIntegerOption((opt) =>
+            opt
+              .setName("prison_plaintiff_min")
+              .setDescription(
+                "Prison minutes for plaintiff (locks heist/sabotage).",
+              ),
+          )
+          .addStringOption((opt) =>
+            opt
+              .setName("note")
+              .setDescription("Note from the judge for the record / DM.")
+              .setMaxLength(1000),
+          ),
       ),
   );
 
@@ -286,18 +445,430 @@ export async function execute(
   }
 
   const guildId = interaction.guildId;
+  const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand(true);
+  const ownerId = process.env.OWNER_ID ?? null;
 
-  const isAdmin =
-    interaction.memberPermissions?.has(
-      PermissionFlagsBits.ManageGuild,
-    ) ||
-    (process.env.OWNER_ID &&
-      interaction.user.id === process.env.OWNER_ID);
+  // ----- High Court: /credit case ... (judge only) -----
+  if (group === "case") {
+    if (!ownerId || interaction.user.id !== ownerId) {
+      await interaction.reply({
+        content:
+          "Only the High Court judge may manage cases. This bench is reserved.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (sub === "info") {
+      const caseId = interaction.options.getInteger("case_id", true);
+      const c = getCaseById(guildId, caseId);
+
+      if (!c) {
+        await interaction.reply({
+          content: `Case #${caseId} was not found in this server.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const filedTag = `<t:${c.createdAt}:R>`;
+      const closedTag =
+        c.closedAt != null ? `<t:${c.closedAt}:R>` : "—";
+
+      const statusLine =
+        c.status === "open"
+          ? "OPEN"
+          : `CLOSED${c.verdict ? ` (${c.verdict})` : ""}`;
+
+      const requestedParts: string[] = [];
+      if (c.requestedFine != null) {
+        requestedParts.push(`Fine: **${c.requestedFine}**`);
+      }
+      if (c.requestedSentence != null) {
+        requestedParts.push(`Prison: **${c.requestedSentence}m**`);
+      }
+      const requested =
+        requestedParts.length > 0
+          ? requestedParts.join(" · ")
+          : "None specified";
+
+      const verdictParts: string[] = [];
+      if (c.verdict) {
+        verdictParts.push(`Verdict: **${c.verdict}**`);
+      }
+      if (c.judgeId) {
+        verdictParts.push(`Judge: <@${c.judgeId}>`);
+      }
+      if (c.fineDefendant) {
+        verdictParts.push(`Fine (def): **${c.fineDefendant}**`);
+      }
+      if (c.finePlaintiff) {
+        verdictParts.push(`Fine (plt): **${c.finePlaintiff}**`);
+      }
+      if (c.prisonDefendant) {
+        verdictParts.push(
+          `Prison (def): **${c.prisonDefendant}m**`,
+        );
+      }
+      if (c.prisonPlaintiff) {
+        verdictParts.push(
+          `Prison (plt): **${c.prisonPlaintiff}m**`,
+        );
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`⚖ High Court Case #${c.id}`)
+        .setDescription(
+          [
+            `**Charge:** ${c.charge}`,
+            `**Status:** ${statusLine}`,
+            "",
+            `**Plaintiff:** <@${c.plaintiffId}>`,
+            `**Defendant:** <@${c.defendantId}>`,
+            "",
+            `**Filed:** ${filedTag}`,
+            `**Closed:** ${closedTag}`,
+          ].join("\n"),
+        )
+        .addFields(
+          {
+            name: "Requested Relief",
+            value: requested,
+          },
+          {
+            name: "Details",
+            value: c.details ?? "_No additional lore provided._",
+          },
+          {
+            name: "Verdict / Outcome",
+            value:
+              verdictParts.length > 0
+                ? verdictParts.join("\n")
+                : "_No verdict recorded yet._",
+          },
+        );
+
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      return;
+    }
+
+    if (sub === "verdict") {
+      const caseId = interaction.options.getInteger("case_id", true);
+      const verdict = interaction.options.getString(
+        "verdict",
+        true,
+      ) as VerdictChoice;
+
+      let fineDefendant =
+        interaction.options.getInteger("fine_defendant") ?? 0;
+      let finePlaintiff =
+        interaction.options.getInteger("fine_plaintiff") ?? 0;
+      let prisonDefendantMin =
+        interaction.options.getInteger("prison_defendant_min") ?? 0;
+      let prisonPlaintiffMin =
+        interaction.options.getInteger("prison_plaintiff_min") ?? 0;
+      const note =
+        interaction.options.getString("note") ??
+        "No additional remarks.";
+
+      const c = getCaseById(guildId, caseId);
+      if (!c) {
+        await interaction.reply({
+          content: `Case #${caseId} was not found in this server.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (c.status === "closed") {
+        await interaction.reply({
+          content: `Case #${caseId} is already closed.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Normalize some verdict behaviors
+      if (verdict === "not_guilty" || verdict === "declined") {
+        // Pure "no-penalty" outcomes
+        fineDefendant = 0;
+        finePlaintiff = 0;
+        prisonDefendantMin = 0;
+        prisonPlaintiffMin = 0;
+      }
+
+      const judgeId = interaction.user.id;
+
+      const plaintiffScoreBefore = getScore(
+        guildId,
+        c.plaintiffId,
+      );
+      const defendantScoreBefore = getScore(
+        guildId,
+        c.defendantId,
+      );
+      let plaintiffScoreAfter = plaintiffScoreBefore;
+      let defendantScoreAfter = defendantScoreBefore;
+
+      // Apply Social Credit fines
+      if (finePlaintiff > 0) {
+        const res = adjustScore(
+          guildId,
+          judgeId,
+          c.plaintiffId,
+          -finePlaintiff,
+          `High Court Case #${caseId} — Verdict: ${verdict}`,
+        );
+        plaintiffScoreAfter = res.current;
+      }
+
+      if (fineDefendant > 0) {
+        const res = adjustScore(
+          guildId,
+          judgeId,
+          c.defendantId,
+          -fineDefendant,
+          `High Court Case #${caseId} — Verdict: ${verdict}`,
+        );
+        defendantScoreAfter = res.current;
+      }
+
+      // Apply prison time (heist / sabotage lock)
+      let plaintiffPrisonUntilSec: number | null = null;
+      let defendantPrisonUntilSec: number | null = null;
+
+      if (prisonPlaintiffMin > 0) {
+        const extraMs = prisonPlaintiffMin * 60_000;
+        const key = `${guildId}:${c.plaintiffId}`;
+        const untilSteal = addPrisonTime(
+          stealPrison,
+          key,
+          extraMs,
+        );
+        addPrisonTime(sabotagePrison, key, extraMs);
+        plaintiffPrisonUntilSec = Math.floor(untilSteal / 1000);
+      }
+
+      if (prisonDefendantMin > 0) {
+        const extraMs = prisonDefendantMin * 60_000;
+        const key = `${guildId}:${c.defendantId}`;
+        const untilSteal = addPrisonTime(
+          stealPrison,
+          key,
+          extraMs,
+        );
+        addPrisonTime(sabotagePrison, key, extraMs);
+        defendantPrisonUntilSec = Math.floor(untilSteal / 1000);
+      }
+
+      // Persist verdict in DB
+      setCaseVerdict(
+        guildId,
+        caseId,
+        verdict,
+        judgeId,
+        finePlaintiff,
+        fineDefendant,
+        prisonPlaintiffMin,
+        prisonDefendantMin,
+      );
+
+      const vLabel = verdictHumanLabel(verdict);
+      const guildName =
+        interaction.guild?.name ?? "this server";
+
+      const lines: string[] = [];
+      lines.push(
+        `**Case #${caseId} — ${c.charge}**`,
+        `**Verdict:** ${vLabel}`,
+        "",
+        `**Plaintiff:** <@${c.plaintiffId}>`,
+        `**Defendant:** <@${c.defendantId}>`,
+        "",
+      );
+
+      if (
+        finePlaintiff === 0 &&
+        fineDefendant === 0 &&
+        prisonPlaintiffMin === 0 &&
+        prisonDefendantMin === 0
+      ) {
+        if (verdict === "declined") {
+          lines.push(
+            "_The Court declines to hear this matter. No Social Credit penalties were issued._",
+          );
+        } else if (verdict === "not_guilty") {
+          lines.push(
+            "_The Court finds no liability. No Social Credit penalties were issued._",
+          );
+        } else {
+          lines.push(
+            "_No Social Credit penalties were recorded in this verdict._",
+          );
+        }
+      } else {
+        if (finePlaintiff > 0) {
+          lines.push(
+            `• **Plaintiff fine:** -${finePlaintiff} Social Credit`,
+          );
+        }
+        if (fineDefendant > 0) {
+          lines.push(
+            `• **Defendant fine:** -${fineDefendant} Social Credit`,
+          );
+        }
+        if (prisonPlaintiffMin > 0) {
+          const until =
+            plaintiffPrisonUntilSec != null
+              ? `<t:${plaintiffPrisonUntilSec}:R>`
+              : "for a while";
+          lines.push(
+            `• **Plaintiff prison:** ${prisonPlaintiffMin} minutes (no heists/sabotage until ${until})`,
+          );
+        }
+        if (prisonDefendantMin > 0) {
+          const until =
+            defendantPrisonUntilSec != null
+              ? `<t:${defendantPrisonUntilSec}:R>`
+              : "for a while";
+          lines.push(
+            `• **Defendant prison:** ${prisonDefendantMin} minutes (no heists/sabotage until ${until})`,
+          );
+        }
+
+        lines.push("");
+        lines.push(`**Judge's Note:** ${note}`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle("⚖ High Court Verdict")
+        .setDescription(lines.join("\n"))
+        .setFooter({
+          text: `High Court of Yak Yak · ${guildName}`,
+        });
+
+      await interaction.reply({ embeds: [embed] });
+
+      // DMs only when there is a penalty
+      const dmTasks: Promise<void>[] = [];
+
+      if (fineDefendant > 0 || prisonDefendantMin > 0) {
+        const fields = [];
+        if (fineDefendant > 0) {
+          fields.push({
+            name: "Social Credit Fine",
+            value: `-${fineDefendant}`,
+            inline: true,
+          });
+        }
+        if (
+          prisonDefendantMin > 0 &&
+          defendantPrisonUntilSec != null
+        ) {
+          fields.push({
+            name: "Prison Sentence",
+            value: `${prisonDefendantMin} minutes (no heists/sabotage until <t:${defendantPrisonUntilSec}:R>)`,
+            inline: true,
+          });
+        }
+
+        const dmEmbedDef = new EmbedBuilder()
+          .setTitle("⚖ High Court of Yak Yak — Verdict")
+          .setDescription(
+            [
+              "You've been summoned to the High Court for Social Credit fraud.",
+              "",
+              `**Case:** #${caseId}`,
+              `**Role:** Defendant`,
+              `**Server:** ${guildName}`,
+              `**Verdict:** ${vLabel}`,
+            ].join("\n"),
+          )
+          .addFields(...fields);
+
+        if (note) {
+          dmEmbedDef.addFields({
+            name: "Judge's Note",
+            value: note,
+          });
+        }
+
+        dmTasks.push(
+          safeSendDm(interaction, c.defendantId, dmEmbedDef),
+        );
+      }
+
+      if (finePlaintiff > 0 || prisonPlaintiffMin > 0) {
+        const fields = [];
+        if (finePlaintiff > 0) {
+          fields.push({
+            name: "Social Credit Fine",
+            value: `-${finePlaintiff}`,
+            inline: true,
+          });
+        }
+        if (
+          prisonPlaintiffMin > 0 &&
+          plaintiffPrisonUntilSec != null
+        ) {
+          fields.push({
+            name: "Prison Sentence",
+            value: `${prisonPlaintiffMin} minutes (no heists/sabotage until <t:${plaintiffPrisonUntilSec}:R>)`,
+            inline: true,
+          });
+        }
+
+        const dmEmbedPlt = new EmbedBuilder()
+          .setTitle("⚖ High Court of Yak Yak — Verdict")
+          .setDescription(
+            [
+              "You've been summoned to the High Court for Social Credit fraud.",
+              "",
+              `**Case:** #${caseId}`,
+              `**Role:** Plaintiff`,
+              `**Server:** ${guildName}`,
+              `**Verdict:** ${vLabel}`,
+            ].join("\n"),
+          )
+          .addFields(...fields);
+
+        if (note) {
+          dmEmbedPlt.addFields({
+            name: "Judge's Note",
+            value: note,
+          });
+        }
+
+        dmTasks.push(
+          safeSendDm(interaction, c.plaintiffId, dmEmbedPlt),
+        );
+      }
+
+      if (dmTasks.length > 0) {
+        await Promise.allSettled(dmTasks);
+      }
+
+      return;
+    }
+
+    // Unknown case subcommand
+    await interaction.reply({
+      content: "Unknown High Court operation.",
+      ephemeral: true,
+    });
+    return;
+  }
 
   // ----- /credit set_action_channel -----
   if (sub === "set_action_channel") {
     const channel = interaction.options.getChannel("channel", true);
+
+    const isAdmin =
+      interaction.memberPermissions?.has(
+        PermissionFlagsBits.ManageGuild,
+      ) ||
+      (ownerId && interaction.user.id === ownerId);
 
     if (!isAdmin) {
       await interaction.reply({
@@ -318,163 +889,6 @@ export async function execute(
       .setFooter({ text: "Yak Yak Social Credit Bureau" });
 
     await interaction.reply({ embeds: [embed], ephemeral: true });
-    return;
-  }
-
-  // ----- /credit court (High Court admin punishments) -----
-  if (sub === "court") {
-    if (!isAdmin) {
-      await interaction.reply({
-        content:
-          "Only the High Court (server admins) may issue Social Credit sentences.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    const target = interaction.options.getUser("target", true);
-    const fineOpt = interaction.options.getInteger("fine");
-    const timeoutMinutesOpt =
-      interaction.options.getInteger("timeout_minutes");
-    const reasonOpt = interaction.options.getString("reason") ?? null;
-
-    if (target.bot) {
-      await interaction.reply({
-        content: "You can't put a bot on trial. They are already soulless.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (!fineOpt && !timeoutMinutesOpt) {
-      await interaction.reply({
-        content:
-          "You must specify at least a **fine** or a **timeout_minutes** value.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    let fineApplied = 0;
-    let scoreBefore: number | null = null;
-    let scoreAfter: number | null = null;
-
-    if (fineOpt && fineOpt > 0) {
-      const fineAmount = Math.abs(fineOpt);
-      const result = adjustScore(
-        guildId,
-        interaction.user.id,
-        target.id,
-        -fineAmount,
-        reasonOpt
-          ? `High Court fine: ${reasonOpt}`
-          : "High Court fine",
-      );
-      fineApplied = fineAmount;
-      scoreBefore = result.previous;
-      scoreAfter = result.current;
-    }
-
-    let timeoutText = "No action timeout applied";
-    let bannedUntilSec: number | null = null;
-
-    if (timeoutMinutesOpt && timeoutMinutesOpt > 0) {
-      const ms = timeoutMinutesOpt * 60_000;
-      const until = Date.now() + ms;
-      bannedUntilSec = Math.floor(until / 1000);
-      const key = `${guildId}:${target.id}`;
-      // Lock out both steal and sabotage
-      stealPrison.set(key, until);
-      sabotagePrison.set(key, until);
-      timeoutText = `${timeoutMinutesOpt} minutes\nRestricted until <t:${bannedUntilSec}:R>`;
-    }
-
-    const guildName = interaction.guild?.name ?? "this server";
-
-    const embed = new EmbedBuilder()
-      .setTitle("⚖️ High Court of Social Credit")
-      .setDescription(
-        `${target} has been **summoned to the High Court for Social Credit fraud**.\n\n` +
-          `Verdict delivered by ${interaction.user} in **${guildName}**.`,
-      )
-      .setColor(0xdc2626)
-      .setFooter({
-        text: "All sentences are final. Appeals may be laughed at.",
-      });
-
-    const fields: {
-      name: string;
-      value: string;
-      inline?: boolean;
-    }[] = [];
-
-    fields.push({
-      name: "Defendant",
-      value: `${target} \`(${target.tag})\``,
-      inline: true,
-    });
-
-    if (fineApplied > 0) {
-      const scoreLine =
-        scoreBefore !== null && scoreAfter !== null
-          ? `\`${scoreBefore} → ${scoreAfter}\``
-          : "";
-      fields.push({
-        name: "Fine",
-        value: `-${fineApplied} Social Credit ${scoreLine}`,
-        inline: true,
-      });
-    } else {
-      fields.push({
-        name: "Fine",
-        value: "None applied",
-        inline: true,
-      });
-    }
-
-    fields.push({
-      name: "Timeout",
-      value: timeoutText,
-      inline: true,
-    });
-
-    if (reasonOpt) {
-      fields.push({
-        name: "Charge Sheet",
-        value: reasonOpt,
-        inline: false,
-      });
-    }
-
-    embed.addFields(fields);
-
-    const courtGif =
-      getRandomGif(guildId, "negative") ??
-      getRandomGif(guildId, "sabotage") ??
-      getRandomGif(guildId, "positive");
-    if (courtGif) {
-      embed.setImage(courtGif);
-    }
-
-    // Reply in the channel
-    await interaction.reply({ embeds: [embed] });
-
-    // DM the defendant with a slightly tweaked version
-    try {
-      const dmEmbed = EmbedBuilder.from(embed)
-        .setDescription(
-          `You have been **summoned to the High Court for Social Credit fraud** in **${guildName}**.\n\n` +
-            `Presiding officer: ${interaction.user}`,
-        )
-        .setFooter({
-          text: "This is an official notice from the Yak Yak Social Credit Bureau.",
-        });
-
-      await target.send({ embeds: [dmEmbed] });
-    } catch {
-      // user has DMs closed, ignore
-    }
-
     return;
   }
 
@@ -500,6 +914,145 @@ export async function execute(
     }
 
     return true;
+  }
+
+  // ----- /credit sue -----
+  if (sub === "sue") {
+    const plaintiff = interaction.user;
+    const defendant =
+      interaction.options.getUser("defendant", true);
+
+    if (defendant.bot) {
+      await interaction.reply({
+        content: "You can't sue a bot. They have no legal standing.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (defendant.id === plaintiff.id) {
+      await interaction.reply({
+        content:
+          "You can't sue yourself in the High Court. Touch grass and pick a new target.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const charge = interaction.options.getString("charge", true);
+    const details =
+      interaction.options.getString("details") ?? null;
+    const requestedFine =
+      interaction.options.getInteger("requested_fine") ?? null;
+    const requestedSentence =
+      interaction.options.getInteger("requested_sentence_min") ??
+      null;
+
+    const caseId = createCase(
+      guildId,
+      plaintiff.id,
+      defendant.id,
+      charge,
+      details,
+      requestedFine,
+      requestedSentence,
+    );
+
+    const lines: string[] = [];
+    lines.push(
+      `**Plaintiff:** ${plaintiff}`,
+      `**Defendant:** ${defendant}`,
+      `**Charge:** ${charge}`,
+      "",
+    );
+
+    const reqParts: string[] = [];
+    if (requestedFine != null) {
+      reqParts.push(`Fine: **${requestedFine}** Social Credit`);
+    }
+    if (requestedSentence != null) {
+      reqParts.push(
+        `Prison: **${requestedSentence} minutes** (heist/sabotage lock)`,
+      );
+    }
+    lines.push(
+      `**Requested Relief:** ${
+        reqParts.length > 0
+          ? reqParts.join(" · ")
+          : "None specified"
+      }`,
+    );
+
+    if (details) {
+      lines.push("", `**Details:** ${details}`);
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📜 High Court Civil Complaint #${caseId}`)
+      .setDescription(lines.join("\n"))
+      .setFooter({
+        text: "Case filed. The judge will review this when they feel like it.",
+      });
+
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+
+  // ----- /credit docket -----
+  if (sub === "docket") {
+    if (!ownerId || interaction.user.id !== ownerId) {
+      await interaction.reply({
+        content:
+          "Only the High Court judge may view the full docket.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const statusInput = interaction.options.getString(
+      "status",
+    ) as "open" | "closed" | "all" | null;
+    const status = statusInput ?? "open";
+    const limit = interaction.options.getInteger("limit") ?? 10;
+
+    const cases = listCases(guildId, status, limit);
+
+    if (cases.length === 0) {
+      await interaction.reply({
+        content:
+          status === "open"
+            ? "The docket is clear. No open cases."
+            : "No cases match that filter.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const lines = cases.map((c) => {
+      const statusLabel =
+        c.status === "open"
+          ? "OPEN"
+          : `CLOSED${c.verdict ? ` (${c.verdict})` : ""}`;
+      const filedTag = `<t:${c.createdAt}:R>`;
+      return `• **#${c.id}** — <@${c.plaintiffId}> v. <@${c.defendantId}> — ${c.charge} · *${statusLabel}* · filed ${filedTag}`;
+    });
+
+    const title =
+      status === "open"
+        ? "⚖ High Court Docket — Open Cases"
+        : status === "closed"
+          ? "⚖ High Court Docket — Closed Cases"
+          : "⚖ High Court Docket — All Cases";
+
+    const embed = new EmbedBuilder()
+      .setTitle(title)
+      .setDescription(lines.join("\n"))
+      .setFooter({
+        text: `Showing ${cases.length} case(s)`,
+      });
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return;
   }
 
   // ----- /credit show -----
@@ -913,7 +1466,10 @@ export async function execute(
     }
 
     const baseTarget = Math.max(Math.abs(targetScoreBefore), 1);
-    const baseAttacker = Math.max(Math.abs(attackerScoreBefore), 1);
+    const baseAttacker = Math.max(
+      Math.abs(attackerScoreBefore),
+      1,
+    );
 
     // 🎲 Dice-based sabotage outcome
     const roll = randomInt(1, 100);
@@ -985,7 +1541,9 @@ export async function execute(
 
       if (Math.random() < 0.3) {
         const pctSelf = randomInt(1, 5);
-        let dmgSelf = Math.floor((baseAttacker * pctSelf) / 100);
+        let dmgSelf = Math.floor(
+          (baseAttacker * pctSelf) / 100,
+        );
         if (dmgSelf < 1) dmgSelf = 1;
         attackerDelta = -dmgSelf;
         outcomeFlavor =
@@ -1020,7 +1578,9 @@ export async function execute(
 
       if (Math.random() < 0.5) {
         const pctSelf = randomInt(1, 5);
-        let dmgSelf = Math.floor((baseAttacker * pctSelf) / 100);
+        let dmgSelf = Math.floor(
+          (baseAttacker * pctSelf) / 100,
+        );
         if (dmgSelf < 1) dmgSelf = 1;
         attackerDelta = -dmgSelf;
       }
@@ -1083,7 +1643,8 @@ export async function execute(
     const changes: string[] = [];
 
     if (targetDelta !== 0) {
-      const deltaStr = targetDelta > 0 ? `+${targetDelta}` : `${targetDelta}`;
+      const deltaStr =
+        targetDelta > 0 ? `+${targetDelta}` : `${targetDelta}`;
       changes.push(
         `**Target change:** ${deltaStr}\n` +
           `**${target.username}**: ${targetBefore} → ${targetAfter}`,
@@ -1172,7 +1733,7 @@ export async function execute(
       .setDescription(lines.join("\n"))
       .setFooter({
         text: `Showing last ${entries.length} events for ${
-          target.tag ?? target.username
+          (target as any).tag ?? target.username
         }`,
       });
 
