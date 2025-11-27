@@ -16,6 +16,7 @@ import {
   getTodayActivityTotal,
 } from "./db/socialDb.js";
 import { installAfterdarkKeywordListener } from "./nsfw_keywords.js";
+import { handleCreditCourtButton } from "./commands/credit.js";
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.SOCIAL_GUILD_ID;
@@ -170,6 +171,19 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // ---- HIGH COURT / CREDIT BUTTONS ----
+  if (
+    interaction.isButton() &&
+    interaction.customId.startsWith("creditCourt|")
+  ) {
+    try {
+      await handleCreditCourtButton(interaction);
+    } catch (err) {
+      console.error("Error handling credit court button:", err);
+    }
+    return;
+  }
+
   // ---- MUSIC BUTTONS ----
   if (interaction.isButton() && interaction.customId.startsWith("music:")) {
     try {
