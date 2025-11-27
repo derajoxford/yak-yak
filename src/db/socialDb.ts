@@ -52,19 +52,29 @@ CREATE TABLE IF NOT EXISTS social_triggers (
   case_sensitive INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS credit_settings (
-  guild_id          TEXT PRIMARY KEY,
-  action_channel_id TEXT
+CREATE TABLE IF NOT EXISTS social_settings (
+  guild_id                TEXT PRIMARY KEY,
+  credit_action_channel_id TEXT
 );
 
-CREATE TABLE IF NOT EXISTS credit_penalties (
-  guild_id     TEXT NOT NULL,
-  user_id      TEXT NOT NULL,
-  banned_until INTEGER NOT NULL,
-  reason       TEXT,
-  created_at   INTEGER NOT NULL,
-  updated_at   INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, user_id)
+CREATE TABLE IF NOT EXISTS social_cases (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id           TEXT NOT NULL,
+  plaintiff_id       TEXT NOT NULL,
+  defendant_id       TEXT NOT NULL,
+  charge             TEXT NOT NULL,
+  details            TEXT,
+  requested_fine     INTEGER,
+  requested_sentence INTEGER,
+  status             TEXT NOT NULL CHECK (status IN ('open','closed')),
+  verdict            TEXT,
+  judge_id           TEXT,
+  fine_plaintiff     INTEGER,
+  fine_defendant     INTEGER,
+  prison_plaintiff   INTEGER,
+  prison_defendant   INTEGER,
+  created_at         INTEGER NOT NULL,
+  closed_at          INTEGER
 );
 `);
 
@@ -311,95 +321,6 @@ export function getSabotageStatsSince(
   return rows;
 }
 
-// -------- Credit action channel --------
-
-export function getCreditActionChannel(guildId: string): string | null {
-  const row = db
-    .prepare(
-      `
-      SELECT action_channel_id
-      FROM credit_settings
-      WHERE guild_id = ?
-    `,
-    )
-    .get(guildId) as { action_channel_id: string } | undefined;
-
-  return row?.action_channel_id ?? null;
-}
-
-export function setCreditActionChannel(
-  guildId: string,
-  channelId: string,
-): void {
-  db.prepare(
-    `
-    INSERT INTO credit_settings (guild_id, action_channel_id)
-    VALUES (?, ?)
-    ON CONFLICT(guild_id) DO UPDATE SET
-      action_channel_id = excluded.action_channel_id
-  `,
-  ).run(guildId, channelId);
-}
-
-// -------- Credit penalties (High Court) --------
-
-export interface CreditPenalty {
-  userId: string;
-  bannedUntil: number;
-  reason: string | null;
-}
-
-export function setCreditPenalty(
-  guildId: string,
-  userId: string,
-  bannedUntil: number | null,
-  reason: string | null,
-): void {
-  if (!bannedUntil || bannedUntil <= 0) {
-    db.prepare(
-      `
-      DELETE FROM credit_penalties
-      WHERE guild_id = ? AND user_id = ?
-    `,
-    ).run(guildId, userId);
-    return;
-  }
-
-  const ts = now();
-  db.prepare(
-    `
-    INSERT INTO credit_penalties (guild_id, user_id, banned_until, reason, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(guild_id, user_id) DO UPDATE SET
-      banned_until = excluded.banned_until,
-      reason       = excluded.reason,
-      updated_at   = excluded.updated_at
-  `,
-  ).run(guildId, userId, bannedUntil, reason, ts, ts);
-}
-
-export function getCreditPenalty(
-  guildId: string,
-  userId: string,
-): CreditPenalty | null {
-  const row = db
-    .prepare(
-      `
-      SELECT
-        user_id      AS userId,
-        banned_until AS bannedUntil,
-        reason
-      FROM credit_penalties
-      WHERE guild_id = ? AND user_id = ?
-    `,
-    )
-    .get(guildId, userId) as
-    | { userId: string; bannedUntil: number; reason: string | null }
-    | undefined;
-
-  return row ?? null;
-}
-
 // -------- GIF pools --------
 
 export type GifKind = "positive" | "negative" | "sabotage";
@@ -550,4 +471,196 @@ export function getTriggers(guildId: string): TriggerRow[] {
     delta: r.delta,
     caseSensitive: !!r.case_sensitive,
   }));
+}
+
+// -------- Settings (credit action channel) --------
+
+export function getCreditActionChannel(
+  guildId: string,
+): string | null {
+  const row = db
+    .prepare(
+      "SELECT credit_action_channel_id FROM social_settings WHERE guild_id = ?",
+    )
+    .get(guildId) as { credit_action_channel_id: string | null } | undefined;
+
+  return row?.credit_action_channel_id ?? null;
+}
+
+export function setCreditActionChannel(
+  guildId: string,
+  channelId: string,
+): void {
+  db.prepare(
+    `
+    INSERT INTO social_settings (guild_id, credit_action_channel_id)
+    VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      credit_action_channel_id = excluded.credit_action_channel_id
+  `,
+  ).run(guildId, channelId);
+}
+
+// -------- High Court Cases --------
+
+export type CaseStatus = "open" | "closed";
+
+export interface SocialCase {
+  id: number;
+  guildId: string;
+  plaintiffId: string;
+  defendantId: string;
+  charge: string;
+  details: string | null;
+  requestedFine: number | null;
+  requestedSentence: number | null;
+  status: CaseStatus;
+  verdict: string | null;
+  judgeId: string | null;
+  finePlaintiff: number | null;
+  fineDefendant: number | null;
+  prisonPlaintiff: number | null;
+  prisonDefendant: number | null;
+  createdAt: number;
+  closedAt: number | null;
+}
+
+function mapCaseRow(row: any): SocialCase {
+  return {
+    id: row.id,
+    guildId: row.guild_id,
+    plaintiffId: row.plaintiff_id,
+    defendantId: row.defendant_id,
+    charge: row.charge,
+    details: row.details ?? null,
+    requestedFine: row.requested_fine ?? null,
+    requestedSentence: row.requested_sentence ?? null,
+    status: row.status as CaseStatus,
+    verdict: row.verdict ?? null,
+    judgeId: row.judge_id ?? null,
+    finePlaintiff: row.fine_plaintiff ?? null,
+    fineDefendant: row.fine_defendant ?? null,
+    prisonPlaintiff: row.prison_plaintiff ?? null,
+    prisonDefendant: row.prison_defendant ?? null,
+    createdAt: row.created_at,
+    closedAt: row.closed_at ?? null,
+  };
+}
+
+export function createCase(
+  guildId: string,
+  plaintiffId: string,
+  defendantId: string,
+  charge: string,
+  details: string | null,
+  requestedFine: number | null,
+  requestedSentence: number | null,
+): number {
+  const info = db
+    .prepare(
+      `
+      INSERT INTO social_cases (
+        guild_id,
+        plaintiff_id,
+        defendant_id,
+        charge,
+        details,
+        requested_fine,
+        requested_sentence,
+        status,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
+    `,
+    )
+    .run(
+      guildId,
+      plaintiffId,
+      defendantId,
+      charge,
+      details,
+      requestedFine,
+      requestedSentence,
+      now(),
+    );
+  return Number(info.lastInsertRowid);
+}
+
+export function getCaseById(
+  guildId: string,
+  caseId: number,
+): SocialCase | null {
+  const row = db
+    .prepare(
+      `
+      SELECT *
+      FROM social_cases
+      WHERE guild_id = ? AND id = ?
+    `,
+    )
+    .get(guildId, caseId) as any;
+
+  if (!row) return null;
+  return mapCaseRow(row);
+}
+
+export function listCases(
+  guildId: string,
+  status: "open" | "closed" | "all",
+  limit: number,
+): SocialCase[] {
+  let sql = `
+    SELECT *
+    FROM social_cases
+    WHERE guild_id = ?
+  `;
+  const params: (string | number)[] = [guildId];
+
+  if (status === "open" || status === "closed") {
+    sql += " AND status = ?";
+    params.push(status);
+  }
+
+  sql += " ORDER BY created_at DESC, id DESC LIMIT ?";
+  params.push(limit);
+
+  const rows = db.prepare(sql).all(...params) as any[];
+  return rows.map(mapCaseRow);
+}
+
+export function setCaseVerdict(
+  guildId: string,
+  caseId: number,
+  verdict: string,
+  judgeId: string,
+  finePlaintiff: number,
+  fineDefendant: number,
+  prisonPlaintiff: number,
+  prisonDefendant: number,
+): void {
+  db.prepare(
+    `
+    UPDATE social_cases
+    SET
+      status = 'closed',
+      verdict = ?,
+      judge_id = ?,
+      fine_plaintiff = ?,
+      fine_defendant = ?,
+      prison_plaintiff = ?,
+      prison_defendant = ?,
+      closed_at = ?
+    WHERE guild_id = ? AND id = ?
+  `,
+  ).run(
+    verdict,
+    judgeId,
+    finePlaintiff,
+    fineDefendant,
+    prisonPlaintiff,
+    prisonDefendant,
+    now(),
+    guildId,
+    caseId,
+  );
 }
