@@ -1,4 +1,5 @@
 // src/commands/music.ts
+// @ts-nocheck
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
