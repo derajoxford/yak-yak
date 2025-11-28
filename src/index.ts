@@ -8,7 +8,7 @@ import {
 } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import { handleMusicButton } from "./commands/music.js";
-import { initShoukaku } from "./music/shoukaku.js";
+import { handleCreditCourtButton } from "./commands/credit.js";
 import {
   getTriggers,
   adjustScore,
@@ -16,7 +16,6 @@ import {
   getTodayActivityTotal,
 } from "./db/socialDb.js";
 import { installAfterdarkKeywordListener } from "./nsfw_keywords.js";
-import { handleCreditCourtButton } from "./commands/credit.js";
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.SOCIAL_GUILD_ID;
@@ -32,7 +31,6 @@ if (!guildId) {
 }
 
 // Cooldown for auto Social Credit triggers (keyword-based), in ms.
-// Default: 60000 (60s) if not set in env.
 const triggerCooldownMs: number = Number(
   process.env.SOCIAL_TRIGGER_COOLDOWN_MS ?? "60000",
 );
@@ -91,7 +89,6 @@ function randomInt(min: number, max: number): number {
 }
 
 // Try to award an "Activity Bonus" for normal chat participation.
-// This is silent: no embeds, just a log entry + score bump.
 function maybeAwardActivity(message: Message): void {
   if (!message.guildId) return;
   const gId = message.guildId;
@@ -106,7 +103,7 @@ function maybeAwardActivity(message: Message): void {
   // Ignore obvious low-effort spam unless there's an attachment
   if (trimmed.length < 15 && message.attachments.size === 0) return;
 
-  // Ignore commands (slash / prefix style and basic "!" commands)
+  // Ignore commands
   if (trimmed.startsWith("/") || trimmed.startsWith("!")) return;
 
   const key = `${gId}:${userId}`;
@@ -136,7 +133,9 @@ function maybeAwardActivity(message: Message): void {
   lastActivityAward.set(key, now);
 }
 
-const client = new Client({
+// NOTE: We cast Client as any for the constructor so TS stops whining,
+// then cast back to Client so the rest of the file is typed.
+const client = new (Client as any)({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
@@ -144,9 +143,10 @@ const client = new Client({
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildVoiceStates, // REQUIRED for music VC connects
   ],
-});
+}) as Client;
 
-// IMPORTANT: init BEFORE login so the connector gets voice packets. :contentReference[oaicite:4]{index=4}
+// IMPORTANT: init BEFORE login so the connector gets voice packets.
+import { initShoukaku } from "./music/shoukaku.js";
 try {
   initShoukaku(client);
 } catch (err) {
@@ -171,25 +171,20 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  // ---- HIGH COURT / CREDIT BUTTONS ----
-  if (
-    interaction.isButton() &&
-    interaction.customId.startsWith("creditCourt|")
-  ) {
+  // ---- BUTTONS ----
+  if (interaction.isButton()) {
     try {
-      await handleCreditCourtButton(interaction);
-    } catch (err) {
-      console.error("Error handling credit court button:", err);
-    }
-    return;
-  }
+      if (interaction.customId.startsWith("music:")) {
+        await handleMusicButton(interaction);
+        return;
+      }
 
-  // ---- MUSIC BUTTONS ----
-  if (interaction.isButton() && interaction.customId.startsWith("music:")) {
-    try {
-      await handleMusicButton(interaction);
+      if (interaction.customId.startsWith("creditCourt|")) {
+        await handleCreditCourtButton(interaction);
+        return;
+      }
     } catch (err) {
-      console.error("Error handling music button:", err);
+      console.error("Error handling button interaction:", err);
     }
     return;
   }
@@ -302,8 +297,7 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// Distinct-user reaction bonus: when a message reaches N distinct reactors,
-// award the author a one-time bonus (within the daily activity cap).
+// Distinct-user reaction bonus
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   try {
     if (user.bot) return;
