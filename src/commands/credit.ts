@@ -9,6 +9,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   type ButtonInteraction,
+  PermissionsBitField,
 } from "discord.js";
 import {
   getScore,
@@ -155,7 +156,7 @@ const courtCases = new Map<string, CourtCase>();
 function isJudge(
   guildId: string,
   userId: string,
-  memberPerms: Readonly<bigint> | null | undefined,
+  memberPerms: PermissionsBitField | null | undefined,
 ): boolean {
   const hasManageGuild =
     memberPerms?.has(PermissionFlagsBits.ManageGuild) ?? false;
@@ -391,7 +392,7 @@ export async function execute(
     const judge = interaction.user;
     const memberPerms = interaction.memberPermissions ?? null;
 
-    if (!isJudge(guildId, judge.id, memberPerms)) {
+    if (!isJudge(guildId, judge.id, memberPerms as PermissionsBitField | null)) {
       await interaction.reply({
         content:
           "Only the High Court (server admins / configured OWNER_ID) may use `/credit court`.",
@@ -1524,7 +1525,7 @@ export async function handleCreditCourtButton(
     !isJudge(
       guildId,
       judge.id,
-      interaction.memberPermissions ?? null,
+      interaction.memberPermissions as PermissionsBitField | null,
     )
   ) {
     await interaction.reply({
