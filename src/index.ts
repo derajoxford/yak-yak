@@ -8,7 +8,10 @@ import {
 } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import { handleMusicButton } from "./commands/music.js";
-import { handleCreditCourtButton } from "./commands/credit.js";
+import {
+  handleCreditCourtButton,
+  handleCreditSueModal,
+} from "./commands/credit.js";
 import { initShoukaku } from "./music/shoukaku.js";
 import {
   getTriggers,
@@ -196,6 +199,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     // Unknown button type: ignore quietly
+    return;
+  }
+
+  // ---- MODALS ----
+  if (interaction.isModalSubmit()) {
+    const customId = interaction.customId ?? "";
+
+    if (customId.startsWith("creditSue|")) {
+      try {
+        await handleCreditSueModal(interaction as any);
+      } catch (err) {
+        console.error("Error handling credit sue modal:", err);
+      }
+      return;
+    }
+
+    // no other modals yet
     return;
   }
 
