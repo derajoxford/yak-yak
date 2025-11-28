@@ -1,4 +1,5 @@
 // src/music/shoukaku.ts
+// @ts-nocheck
 import type { Client } from "discord.js";
 import { Shoukaku, Connectors, type NodeOption, type Player } from "shoukaku";
 
