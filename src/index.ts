@@ -8,6 +8,7 @@ import {
 } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import { handleMusicButton } from "./commands/music.js";
+import { handleCreditCourtButton } from "./commands/credit.js";
 import { initShoukaku } from "./music/shoukaku.js";
 import {
   getTriggers,
@@ -170,13 +171,31 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  // ---- MUSIC BUTTONS ----
-  if (interaction.isButton() && interaction.customId.startsWith("music:")) {
-    try {
-      await handleMusicButton(interaction as any);
-    } catch (err) {
-      console.error("Error handling music button:", err);
+  // ---- BUTTONS ----
+  if (interaction.isButton()) {
+    const customId = interaction.customId ?? "";
+
+    // MUSIC BUTTONS
+    if (customId.startsWith("music:")) {
+      try {
+        await handleMusicButton(interaction as any);
+      } catch (err) {
+        console.error("Error handling music button:", err);
+      }
+      return;
     }
+
+    // HIGH COURT / CREDIT LAWSUIT BUTTONS
+    if (customId.startsWith("creditCourt|")) {
+      try {
+        await handleCreditCourtButton(interaction as any);
+      } catch (err) {
+        console.error("Error handling credit court button:", err);
+      }
+      return;
+    }
+
+    // Unknown button type: ignore quietly
     return;
   }
 
