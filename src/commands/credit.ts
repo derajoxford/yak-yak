@@ -1,7 +1,7 @@
 // src/commands/credit.ts
 import {
   SlashCommandBuilder,
-  ChatInputCommandInteraction,
+  type ChatInputCommandInteraction,
   EmbedBuilder,
   PermissionFlagsBits,
   ChannelType,
@@ -9,7 +9,6 @@ import {
   ButtonBuilder,
   ButtonStyle,
   type ButtonInteraction,
-  PermissionsBitField,
 } from "discord.js";
 import {
   getScore,
@@ -134,37 +133,30 @@ function checkPrison(
   return { locked: true, remainingMs, untilSec };
 }
 
-// ---- High Court cases (in-memory) ----
-
-type CourtCaseStatus = "OPEN" | "GRANTED" | "DENIED" | "DECLINED";
-
-interface CourtCase {
-  id: string;
-  guildId: string;
-  channelId: string;
-  messageId: string;
-  plaintiffId: string;
-  defendantId: string;
-  claim: string;
-  requested: string | null;
-  createdAt: number; // ms
-  status: CourtCaseStatus;
-}
-
-const courtCases = new Map<string, CourtCase>();
+// ---- High Court judge helper ----
 
 function isJudge(
   guildId: string,
   userId: string,
-  memberPerms: PermissionsBitField | null | undefined,
+  memberPerms: any,
 ): boolean {
-  const hasManageGuild =
-    memberPerms?.has(PermissionFlagsBits.ManageGuild) ?? false;
+  const judgeId = process.env.SOCIAL_JUDGE_ID;
+  if (judgeId && userId === judgeId) return true;
+
   const ownerId = process.env.OWNER_ID;
-  return hasManageGuild || (ownerId != null && ownerId === userId);
+  if (ownerId && userId === ownerId) return true;
+
+  const hasManageGuild =
+    memberPerms != null &&
+    typeof memberPerms === "object" &&
+    "has" in memberPerms &&
+    (memberPerms as any).has?.(PermissionFlagsBits.ManageGuild);
+
+  return Boolean(hasManageGuild);
 }
 
-// ---- Slash command builder ----
+// Simple incrementing lawsuit case ID (reset on restart, which is fine)
+let nextCaseId = 1;
 
 export const data = new SlashCommandBuilder()
   .setName("credit")
@@ -277,7 +269,9 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub
       .setName("sue")
-      .setDescription("File a Social Credit lawsuit against another member.")
+      .setDescription(
+        "File a Social Credit lawsuit against another member (public embed).",
+      )
       .addUserOption((opt) =>
         opt
           .setName("defendant")
@@ -287,87 +281,56 @@ export const data = new SlashCommandBuilder()
       .addStringOption((opt) =>
         opt
           .setName("claim")
-          .setDescription("What did they do? (Your claim)")
-          .setRequired(true)
-          .setMaxLength(400),
+          .setDescription("Short statement of your claim.")
+          .setRequired(true),
       )
       .addStringOption((opt) =>
         opt
           .setName("relief")
-          .setDescription("What relief are you asking the High Court for?")
-          .setRequired(false)
-          .setMaxLength(400),
+          .setDescription(
+            "What do you want the High Court to do? (fine, sentence, etc.)",
+          )
+          .setRequired(false),
       ),
   )
-  .addSubcommandGroup((group) =>
-    group
+  .addSubcommand((sub) =>
+    sub
       .setName("court")
-      .setDescription("High Court admin tools (judge only).")
-      .addSubcommand((sub) =>
-        sub
-          .setName("fine")
-          .setDescription("Issue a Social Credit fine to a member.")
-          .addUserOption((opt) =>
-            opt
-              .setName("target")
-              .setDescription("Who is being fined?")
-              .setRequired(true),
-          )
-          .addIntegerOption((opt) =>
-            opt
-              .setName("amount")
-              .setDescription("How much Social Credit to deduct.")
-              .setRequired(true)
-              .setMinValue(1),
-          )
-          .addStringOption((opt) =>
-            opt
-              .setName("reason")
-              .setDescription("Reason for the fine (shown in logs/embed).")
-              .setRequired(false)
-              .setMaxLength(400),
+      .setDescription("High Court actions (judge only).")
+      .addUserOption((opt) =>
+        opt
+          .setName("target")
+          .setDescription("Who are you ruling on?")
+          .setRequired(true),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("action")
+          .setDescription("Type of ruling")
+          .setRequired(true)
+          .addChoices(
+            { name: "Fine (deduct points)", value: "fine" },
+            { name: "Sentence (timeout from heist/sabotage)", value: "sentence" },
+            { name: "Pardon (clear timeouts)", value: "pardon" },
           ),
       )
-      .addSubcommand((sub) =>
-        sub
-          .setName("sentence")
-          .setDescription(
-            "Bar a member from using /credit steal and /credit sabotage.",
-          )
-          .addUserOption((opt) =>
-            opt
-              .setName("target")
-              .setDescription("Who is being sentenced?")
-              .setRequired(true),
-          )
-          .addIntegerOption((opt) =>
-            opt
-              .setName("minutes")
-              .setDescription("How long is the sentence (minutes)?")
-              .setRequired(true)
-              .setMinValue(1)
-              .setMaxValue(1440),
-          )
-          .addStringOption((opt) =>
-            opt
-              .setName("reason")
-              .setDescription("Reason for the sentence.")
-              .setRequired(false)
-              .setMaxLength(400),
-          ),
+      .addIntegerOption((opt) =>
+        opt
+          .setName("amount")
+          .setDescription("Fine amount (for action = fine).")
+          .setRequired(false),
       )
-      .addSubcommand((sub) =>
-        sub
-          .setName("pardon")
-          .setDescription(
-            "Pardon a member and remove any steal/sabotage lockouts.",
-          )
-          .addUserOption((opt) =>
-            opt
-              .setName("target")
-              .setDescription("Who is being pardoned?")
-              .setRequired(true),
-          ),
+      .addIntegerOption((opt) =>
+        opt
+          .setName("minutes")
+          .setDescription("Sentence length in minutes (for action = sentence).")
+          .setRequired(false),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("reason")
+          .setDescription("Reason or note for the ruling.")
+          .setRequired(false),
       ),
   );
 
@@ -383,223 +346,6 @@ export async function execute(
   }
 
   const guildId = interaction.guildId;
-  const subGroup = interaction.options.getSubcommandGroup(false);
-
-  // ----- /credit court ... (admin judge tools) -----
-  if (subGroup === "court") {
-    const sub = interaction.options.getSubcommand(true);
-
-    const judge = interaction.user;
-    const memberPerms = interaction.memberPermissions ?? null;
-
-    if (!isJudge(guildId, judge.id, memberPerms as PermissionsBitField | null)) {
-      await interaction.reply({
-        content:
-          "Only the High Court (server admins / configured OWNER_ID) may use `/credit court`.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    if (sub === "fine") {
-      const target = interaction.options.getUser("target", true);
-      const amount = interaction.options.getInteger("amount", true);
-      const reason =
-        interaction.options.getString("reason") ??
-        "High Court fine for Social Credit fraud";
-
-      if (target.bot) {
-        await interaction.reply({
-          content: "You cannot fine a bot.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      if (amount <= 0) {
-        await interaction.reply({
-          content: "Fine amount must be a positive number.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const delta = -Math.abs(amount);
-      const result = adjustScore(
-        guildId,
-        judge.id,
-        target.id,
-        delta,
-        reason,
-      );
-
-      const embed = new EmbedBuilder()
-        .setTitle("⚖️ High Court Ruling — Fine Issued")
-        .setDescription(
-          `${target} has been **fined** **${Math.abs(delta)}** Social Credit.\n\n` +
-            `**Reason:** ${reason}\n\n` +
-            `**Previous:** ${result.previous}\n` +
-            `**Current:** ${result.current}`,
-        )
-        .setColor(0xef4444)
-        .setFooter({
-          text: "You've been summoned to the High Court for Social Credit fraud.",
-        });
-
-      await interaction.reply({ embeds: [embed] });
-
-      // DM the defendant
-      try {
-        const dm = new EmbedBuilder()
-          .setTitle("⚖️ High Court Notice — Fine")
-          .setDescription(
-            `You have been fined in **${
-              interaction.guild?.name ?? "a server"
-            }**.\n\n` +
-              `**Amount:** ${Math.abs(delta)} Social Credit\n` +
-              `**Reason:** ${reason}\n` +
-              `**New Balance:** ${result.current}\n\n` +
-              "_You've been summoned to the High Court for Social Credit fraud._",
-          )
-          .setColor(0xef4444);
-
-        const user = await interaction.client.users.fetch(target.id);
-        await user.send({ embeds: [dm] });
-      } catch {
-        // ignore DM failures
-      }
-
-      return;
-    }
-
-    if (sub === "sentence") {
-      const target = interaction.options.getUser("target", true);
-      const minutes = interaction.options.getInteger("minutes", true);
-      const reason =
-        interaction.options.getString("reason") ??
-        "High Court sentence — barred from heists and sabotage";
-
-      if (target.bot) {
-        await interaction.reply({
-          content: "You cannot sentence a bot.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      if (minutes <= 0) {
-        await interaction.reply({
-          content: "Sentence length must be at least 1 minute.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const durationMs = minutes * 60_000;
-      const until = Date.now() + durationMs;
-      const untilSec = Math.floor(until / 1000);
-      const key = `${guildId}:${target.id}`;
-
-      stealPrison.set(key, until);
-      sabotagePrison.set(key, until);
-
-      const embed = new EmbedBuilder()
-        .setTitle("⚖️ High Court Ruling — Sentence Imposed")
-        .setDescription(
-          `${target} is **barred** from using **/credit steal** and **/credit sabotage**.\n\n` +
-            `**Length:** ${minutes} minute(s)\n` +
-            `**Ends:** <t:${untilSec}:f> (<t:${untilSec}:R>)\n\n` +
-            `**Reason:** ${reason}`,
-        )
-        .setColor(0xf97316)
-        .setFooter({
-          text: "You've been summoned to the High Court for Social Credit fraud.",
-        });
-
-      await interaction.reply({ embeds: [embed] });
-
-      // DM the defendant
-      try {
-        const dm = new EmbedBuilder()
-          .setTitle("⚖️ High Court Notice — Sentence")
-          .setDescription(
-            `You have been sentenced in **${
-              interaction.guild?.name ?? "a server"
-            }**.\n\n` +
-              `You are barred from using **/credit steal** and **/credit sabotage** for **${minutes} minute(s)**.\n` +
-              `Sentence ends: <t:${untilSec}:f> (<t:${untilSec}:R>)\n\n` +
-              `**Reason:** ${reason}\n\n` +
-              "_You've been summoned to the High Court for Social Credit fraud._",
-          )
-          .setColor(0xf97316);
-
-        const user = await interaction.client.users.fetch(target.id);
-        await user.send({ embeds: [dm] });
-      } catch {
-        // ignore DM failures
-      }
-
-      return;
-    }
-
-    if (sub === "pardon") {
-      const target = interaction.options.getUser("target", true);
-
-      if (target.bot) {
-        await interaction.reply({
-          content: "You cannot pardon a bot.",
-          ephemeral: true,
-        });
-        return;
-      }
-
-      const key = `${guildId}:${target.id}`;
-      stealPrison.delete(key);
-      sabotagePrison.delete(key);
-
-      const embed = new EmbedBuilder()
-        .setTitle("⚖️ High Court Ruling — Pardon Granted")
-        .setDescription(
-          `${target} has been **pardoned**.\n\n` +
-            "Any existing lockouts on **/credit steal** and **/credit sabotage** are removed.",
-        )
-        .setColor(0x22c55e)
-        .setFooter({
-          text: "You've been summoned to the High Court for Social Credit fraud.",
-        });
-
-      await interaction.reply({ embeds: [embed] });
-
-      // DM the defendant
-      try {
-        const dm = new EmbedBuilder()
-          .setTitle("⚖️ High Court Notice — Pardon")
-          .setDescription(
-            `You have been **pardoned** in **${
-              interaction.guild?.name ?? "a server"
-            }**.\n\n` +
-              "Your access to **/credit steal** and **/credit sabotage** has been restored.",
-          )
-          .setColor(0x22c55e);
-
-        const user = await interaction.client.users.fetch(target.id);
-        await user.send({ embeds: [dm] });
-      } catch {
-        // ignore DM failures
-      }
-
-      return;
-    }
-
-    // Unknown sub inside /court
-    await interaction.reply({
-      content: "Unknown High Court action.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  // ----- Non-court subcommands -----
   const sub = interaction.options.getSubcommand(true);
 
   // ----- /credit set_action_channel -----
@@ -659,17 +405,198 @@ export async function execute(
     return true;
   }
 
+  // ----- /credit court (judge-only) -----
+  if (sub === "court") {
+    const target = interaction.options.getUser("target", true);
+    const action = interaction.options.getString("action", true);
+    const amount = interaction.options.getInteger("amount");
+    const minutes = interaction.options.getInteger("minutes");
+    const reason =
+      interaction.options.getString("reason") ??
+      "High Court ruling (no further details)";
+
+    const memberPerms = interaction.memberPermissions ?? null;
+    if (!isJudge(guildId, interaction.user.id, memberPerms)) {
+      await interaction.reply({
+        content:
+          "Only the appointed High Court Judge may issue rulings. (Set SOCIAL_JUDGE_ID or use Manage Server.)",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (target.bot) {
+      await interaction.reply({
+        content: "The High Court does not recognize bots as valid defendants.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const judge = interaction.user;
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    if (action === "fine") {
+      const amt = amount ?? 0;
+      if (amt <= 0) {
+        await interaction.reply({
+          content: "You must specify a positive `amount` for a fine.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const res = adjustScore(
+        guildId,
+        judge.id,
+        target.id,
+        -amt,
+        `High Court fine: ${reason}`,
+      );
+
+      const embed = new EmbedBuilder()
+        .setTitle("⚖️ High Court Ruling — Fine Issued")
+        .setDescription(
+          `${target} has been fined **${amt}** Social Credit.\n\n` +
+            `**Reason:** ${reason}\n` +
+            `**Balance:** ${res.previous} → ${res.current}`,
+        )
+        .setFooter({
+          text: `Ruling by ${judge.tag} • ${nowSec}`,
+        });
+
+      await interaction.reply({ embeds: [embed] });
+
+      // DM the target
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setTitle("⚖️ High Court Notice — Fine")
+          .setDescription(
+            `You have been fined **${amt}** Social Credit by the High Court.\n\n` +
+              `**Reason:** ${reason}\n` +
+              `**Balance:** ${res.previous} → ${res.current}`,
+          )
+          .setFooter({
+            text: `Ruling by ${judge.tag}`,
+          });
+        await target.send({ embeds: [dmEmbed] });
+      } catch {
+        // ignore DM failures
+      }
+
+      return;
+    }
+
+    if (action === "sentence") {
+      const mins = minutes ?? 0;
+      if (mins <= 0) {
+        await interaction.reply({
+          content:
+            "You must specify a positive `minutes` value for a sentence.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const ms = mins * 60_000;
+      const until = Date.now() + ms;
+      const key = `${guildId}:${target.id}`;
+
+      stealPrison.set(key, until);
+      sabotagePrison.set(key, until);
+
+      const untilSec = Math.floor(until / 1000);
+
+      const embed = new EmbedBuilder()
+        .setTitle("⚖️ High Court Ruling — Sentence Imposed")
+        .setDescription(
+          `${target} has been sentenced to **${mins} minutes** of Social Credit prison.\n\n` +
+            `During this time, they may not use **/credit steal** or **/credit sabotage**.\n\n` +
+            `**Reason:** ${reason}\n` +
+            `Sentence ends <t:${untilSec}:R>`,
+        )
+        .setFooter({
+          text: `Ruling by ${judge.tag} • ${nowSec}`,
+        });
+
+      await interaction.reply({ embeds: [embed] });
+
+      // DM the target
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setTitle("⚖️ High Court Notice — Sentence")
+          .setDescription(
+            `You have been sentenced to **${mins} minutes** of Social Credit prison.\n\n` +
+              `You cannot use **/credit steal** or **/credit sabotage** until <t:${untilSec}:R>.\n\n` +
+              `**Reason:** ${reason}`,
+          )
+          .setFooter({
+            text: `Ruling by ${judge.tag}`,
+          });
+        await target.send({ embeds: [dmEmbed] });
+      } catch {
+        // ignore DM failures
+      }
+
+      return;
+    }
+
+    if (action === "pardon") {
+      const key = `${guildId}:${target.id}`;
+      stealPrison.delete(key);
+      sabotagePrison.delete(key);
+
+      const embed = new EmbedBuilder()
+        .setTitle("⚖️ High Court Ruling — Pardon Granted")
+        .setDescription(
+          `${target} has been **fully pardoned**.\n\n` +
+            `Any Social Credit prison sentences on **steal** or **sabotage** are now cleared.\n\n` +
+            `**Note:** ${reason}`,
+        )
+        .setFooter({
+          text: `Ruling by ${judge.tag} • ${nowSec}`,
+        });
+
+      await interaction.reply({ embeds: [embed] });
+
+      // DM the target
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setTitle("⚖️ High Court Notice — Pardon")
+          .setDescription(
+            `The High Court has granted you a **full pardon**.\n\n` +
+              `Any existing Social Credit prison time is now cleared.\n\n` +
+              `**Note:** ${reason}`,
+          )
+          .setFooter({
+            text: `Ruling by ${judge.tag}`,
+          });
+        await target.send({ embeds: [dmEmbed] });
+      } catch {
+        // ignore
+      }
+
+      return;
+    }
+
+    await interaction.reply({
+      content: "Unknown High Court action.",
+      ephemeral: true,
+    });
+    return;
+  }
+
   // ----- /credit sue -----
   if (sub === "sue") {
     const plaintiff = interaction.user;
     const defendant = interaction.options.getUser("defendant", true);
     const claim = interaction.options.getString("claim", true);
-    const requested =
-      interaction.options.getString("relief") ?? null;
+    const relief =
+      interaction.options.getString("relief") ?? "Not specified.";
 
     if (defendant.bot) {
       await interaction.reply({
-        content: "You can’t sue a bot. They have diplomatic immunity.",
+        content: "You cannot sue a bot. The High Court does not care.",
         ephemeral: true,
       });
       return;
@@ -677,93 +604,66 @@ export async function execute(
 
     if (defendant.id === plaintiff.id) {
       await interaction.reply({
-        content:
-          "You cannot sue yourself. That’s called therapy, not litigation.",
+        content: "You cannot sue yourself. Seek counsel, not chaos.",
         ephemeral: true,
       });
       return;
     }
 
-    const caseId = `SC-${Math.floor(
-      Math.random() * 1_000_000,
-    )
-      .toString()
-      .padStart(6, "0")}`;
-    const createdAt = Date.now();
-    const createdSec = Math.floor(createdAt / 1000);
-
-    const courtCase: CourtCase = {
-      id: caseId,
-      guildId,
-      channelId: interaction.channelId,
-      messageId: "",
-      plaintiffId: plaintiff.id,
-      defendantId: defendant.id,
-      claim,
-      requested,
-      createdAt,
-      status: "OPEN",
-    };
+    const caseId = nextCaseId++;
+    const nowSec = Math.floor(Date.now() / 1000);
 
     const embed = new EmbedBuilder()
-      .setTitle("📜 New Social Credit Lawsuit Filed")
+      .setTitle(`📜 New Social Credit Lawsuit #${caseId}`)
       .setDescription(
-        `Case **${caseId}** has been submitted to the High Court.\n\n` +
-          `**Plaintiff:** ${plaintiff}\n` +
-          `**Defendant:** ${defendant}\n` +
-          `**Filed:** <t:${createdSec}:R> (<t:${createdSec}:f>)`,
+        `**Plaintiff:** ${plaintiff}\n` +
+          `**Defendant:** ${defendant}\n\n` +
+          `A new matter has been filed before the **High Court of Yakuza**.`,
       )
       .addFields(
         {
           name: "Claim",
-          value: claim.slice(0, 1024) || "No claim text provided.",
+          value: claim.length > 1024 ? claim.slice(0, 1021) + "…" : claim,
         },
-        ...(requested
-          ? [
-              {
-                name: "Requested Relief",
-                value: requested.slice(0, 1024),
-              } as const,
-            ]
-          : []),
+        {
+          name: "Requested Relief",
+          value: relief.length > 1024 ? relief.slice(0, 1021) + "…" : relief,
+        },
+        {
+          name: "Status",
+          value:
+            "🟡 Pending review by the High Court. Only the Judge may rule.",
+        },
       )
-      .setColor(0xe5b91f)
       .setFooter({
-        text: "Only the High Court may rule on this case.",
-      });
+        text: `Filed by ${plaintiff.tag} • Case ${caseId}`,
+      })
+      .setTimestamp();
 
-    const row =
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`creditCourt|grant|${caseId}`)
-          .setLabel("Grant Relief")
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`creditCourt|deny|${caseId}`)
-          .setLabel("Deny Claim")
-          .setStyle(ButtonStyle.Danger),
-        new ButtonBuilder()
-          .setCustomId(`creditCourt|decline|${caseId}`)
-          .setLabel("Decline to Hear")
-          .setStyle(ButtonStyle.Secondary),
-      );
-
-    let messageId = "";
-    const courtChannel = interaction.channel;
-    if (courtChannel && "send" in courtChannel) {
-      const msg = await (courtChannel as any).send({
-        embeds: [embed],
-        components: [row],
-      });
-      messageId = msg.id;
-    }
-
-    courtCase.messageId = messageId;
-    courtCases.set(caseId, courtCase);
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          `creditCourt|grant|${guildId}|${plaintiff.id}|${defendant.id}|${caseId}`,
+        )
+        .setLabel("Grant Case")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(
+          `creditCourt|deny|${guildId}|${plaintiff.id}|${defendant.id}|${caseId}`,
+        )
+        .setLabel("Deny Case")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(
+          `creditCourt|decline|${guildId}|${plaintiff.id}|${defendant.id}|${caseId}`,
+        )
+        .setLabel("Decline to Hear")
+        .setStyle(ButtonStyle.Secondary),
+    );
 
     await interaction.reply({
-      content: `📜 Your case **${caseId}** against ${defendant} has been filed with the High Court.`,
-      ephemeral: true,
+      embeds: [embed],
+      components: [row],
     });
 
     return;
@@ -1350,8 +1250,7 @@ export async function execute(
     const changes: string[] = [];
 
     if (targetDelta !== 0) {
-      const deltaStr =
-        targetDelta > 0 ? `+${targetDelta}` : `${targetDelta}`;
+      const deltaStr = targetDelta > 0 ? `+${targetDelta}` : `${targetDelta}`;
       changes.push(
         `**Target change:** ${deltaStr}\n` +
           `**${target.username}**: ${targetBefore} → ${targetAfter}`,
@@ -1440,7 +1339,7 @@ export async function execute(
       .setDescription(lines.join("\n"))
       .setFooter({
         text: `Showing last ${entries.length} events for ${
-          target.tag ?? target.username
+          (target as any).tag ?? target.username
         }`,
       });
 
@@ -1493,24 +1392,17 @@ export async function execute(
   }
 }
 
-// ----- Button handler for High Court verdicts on /credit sue cases -----
+// ----- Button handler for High Court lawsuit embeds -----
 
 export async function handleCreditCourtButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
-  if (!interaction.guildId) {
-    await interaction.reply({
-      content:
-        "High Court cases can only be ruled on inside a server.",
-      ephemeral: true,
-    });
-    return;
-  }
+  const customId = interaction.customId;
+  if (!customId.startsWith("creditCourt|")) return;
 
-  const [prefix, action, caseId] =
-    interaction.customId.split("|");
-
-  if (prefix !== "creditCourt" || !action || !caseId) {
+  const parts = customId.split("|");
+  // creditCourt|action|guildId|plaintiffId|defendantId|caseId
+  if (parts.length < 6) {
     await interaction.reply({
       content: "Malformed High Court button.",
       ephemeral: true,
@@ -1518,143 +1410,115 @@ export async function handleCreditCourtButton(
     return;
   }
 
-  const guildId = interaction.guildId;
+  const [, action, guildId, plaintiffId, defendantId, caseId] = parts;
   const judge = interaction.user;
 
-  if (
-    !isJudge(
-      guildId,
-      judge.id,
-      interaction.memberPermissions as PermissionsBitField | null,
-    )
-  ) {
+  const memberPerms = (interaction.member as any)?.permissions ?? null;
+  if (!isJudge(guildId, judge.id, memberPerms)) {
     await interaction.reply({
       content:
-        "Only the High Court (server admins / configured OWNER_ID) may rule on these cases.",
+        "Only the appointed High Court Judge may rule on lawsuits.",
       ephemeral: true,
     });
     return;
   }
 
-  const courtCase = courtCases.get(caseId);
-  if (!courtCase || courtCase.guildId !== guildId) {
-    await interaction.reply({
-      content:
-        "This case is no longer active or could not be found. It may have expired or the bot restarted.",
-      ephemeral: true,
-    });
-    return;
-  }
+  const plaintiffMention = `<@${plaintiffId}>`;
+  const defendantMention = `<@${defendantId}>`;
+  const ts = Math.floor(Date.now() / 1000);
 
-  if (courtCase.status !== "OPEN") {
-    await interaction.reply({
-      content: `This case has already been decided: **${courtCase.status}**.`,
-      ephemeral: true,
-    });
-    return;
-  }
-
-  let newStatus: CourtCaseStatus;
-  let verdictLabel: string;
-  let color: number;
-  let judgmentText: string;
-
-  const nowSec = Math.floor(Date.now() / 1000);
+  let decision: string;
+  let decisionEmoji: string;
 
   if (action === "grant") {
-    newStatus = "GRANTED";
-    verdictLabel = "✅ Relief Granted";
-    color = 0x22c55e;
-    judgmentText =
-      `The High Court **grants relief** to the plaintiff.\n\n` +
-      `Judge: ${judge}\n` +
-      `Time: <t:${nowSec}:F>`;
+    decisionEmoji = "🟢";
+    decision =
+      `${decisionEmoji} **Case Granted.**\n` +
+      `The lawsuit will proceed. Judge may now use **/credit court** to issue fines or sentences.\n` +
+      `Ruling by ${judge} at <t:${ts}:R>.`;
   } else if (action === "deny") {
-    newStatus = "DENIED";
-    verdictLabel = "❌ Claim Denied";
-    color = 0xef4444;
-    judgmentText =
-      `The High Court **denies the claim** in full.\n\n` +
-      `Judge: ${judge}\n` +
-      `Time: <t:${nowSec}:F>`;
-  } else if (action === "decline") {
-    newStatus = "DECLINED";
-    verdictLabel = "⚖️ Petition Declined";
-    color = 0xfacc15;
-    judgmentText =
-      `The High Court **declines to hear** this matter at this time.\n\n` +
-      `Judge: ${judge}\n` +
-      `Time: <t:${nowSec}:F>`;
+    decisionEmoji = "🔴";
+    decision =
+      `${decisionEmoji} **Case Denied.**\n` +
+      `The claims are rejected by the High Court.\n` +
+      `Ruling by ${judge} at <t:${ts}:R>.`;
   } else {
-    await interaction.reply({
-      content: "Unknown High Court action.",
-      ephemeral: true,
-    });
-    return;
+    decisionEmoji = "⚪";
+    decision =
+      `${decisionEmoji} **Case Declined.**\n` +
+      `The High Court declines to hear this matter.\n` +
+      `Ruling by ${judge} at <t:${ts}:R>.`;
   }
 
-  courtCase.status = newStatus;
-  courtCases.set(caseId, courtCase);
+  const original = interaction.message.embeds[0];
+  const claimText =
+    original?.fields?.find((f) => f.name === "Claim")?.value ??
+    "Unknown / missing.";
+  const reliefText =
+    original?.fields?.find((f) => f.name === "Requested Relief")
+      ?.value ?? "Unknown / missing.";
 
-  const plaintiffMention = `<@${courtCase.plaintiffId}>`;
-  const defendantMention = `<@${courtCase.defendantId}>`;
-
-  const updatedEmbed = new EmbedBuilder()
-    .setTitle(`⚖️ Social Credit Case ${courtCase.id}`)
+  const verdictEmbed = new EmbedBuilder()
+    .setTitle(
+      original?.title ??
+        `⚖️ Social Credit Case ${caseId}`,
+    )
     .setDescription(
       `**Plaintiff:** ${plaintiffMention}\n` +
-        `**Defendant:** ${defendantMention}\n` +
-        `**Filed:** <t:${Math.floor(courtCase.createdAt / 1000)}:f>`,
+        `**Defendant:** ${defendantMention}\n\n` +
+        `A ruling has been issued by the High Court of Yakuza.`,
     )
     .addFields(
       {
         name: "Claim",
-        value: courtCase.claim.slice(0, 1024),
+        value: claimText,
       },
-      ...(courtCase.requested
-        ? [
-            {
-              name: "Requested Relief",
-              value: courtCase.requested.slice(0, 1024),
-            } as const,
-          ]
-        : []),
       {
-        name: "Judgment",
-        value: `${verdictLabel}\n\n${judgmentText}`,
+        name: "Requested Relief",
+        value: reliefText,
+      },
+      {
+        name: "Decision",
+        value: decision,
       },
     )
-    .setColor(color)
     .setFooter({
-      text: "To actually enforce fines or sentences, use /credit court fine|sentence.",
-    });
+      text: `Ruled by ${judge.tag} • Case ${caseId}`,
+    })
+    .setTimestamp();
 
-  // Update the original case message and remove buttons
+  // Update the original message: new embed, remove buttons
   await interaction.update({
-    embeds: [updatedEmbed],
+    embeds: [verdictEmbed],
     components: [],
   });
 
-  // DM plaintiff & defendant a short notice
-  const guildName = interaction.guild?.name ?? "this server";
-  const dmText =
-    `⚖️ High Court ruling in **${guildName}** for case **${courtCase.id}**:\n` +
-    `${verdictLabel}\n\n` +
-    `Claim: ${courtCase.claim}\n` +
-    (courtCase.requested
-      ? `Requested: ${courtCase.requested}\n\n`
-      : "\n") +
-    `Judge: ${judge.tag}`;
+  // DM plaintiff & defendant so it feels official
+  const client = interaction.client;
 
-  for (const userId of [
-    courtCase.plaintiffId,
-    courtCase.defendantId,
-  ]) {
-    try {
-      const user = await interaction.client.users.fetch(userId);
-      await user.send(dmText);
-    } catch {
-      // ignore DM failures
-    }
+  const dmEmbed = new EmbedBuilder()
+    .setTitle(`⚖️ High Court Ruling — Case ${caseId}`)
+    .setDescription(
+      `A ruling has been issued in your Social Credit case between ${plaintiffMention} and ${defendantMention}.\n\n${decision}`,
+    )
+    .addFields(
+      { name: "Claim", value: claimText },
+      { name: "Requested Relief", value: reliefText },
+    )
+    .setFooter({ text: `Ruled by ${judge.tag}` })
+    .setTimestamp();
+
+  try {
+    const pUser = await client.users.fetch(plaintiffId);
+    await pUser.send({ embeds: [dmEmbed] });
+  } catch {
+    // ignore DM failure
+  }
+
+  try {
+    const dUser = await client.users.fetch(defendantId);
+    await dUser.send({ embeds: [dmEmbed] });
+  } catch {
+    // ignore DM failure
   }
 }
