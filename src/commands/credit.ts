@@ -8,7 +8,11 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type ButtonInteraction,
+  type ModalSubmitInteraction,
 } from "discord.js";
 import {
   getScore,
@@ -270,27 +274,13 @@ export const data = new SlashCommandBuilder()
     sub
       .setName("sue")
       .setDescription(
-        "File a Social Credit lawsuit against another member (public embed).",
+        "File a Social Credit lawsuit (opens a High Court filing form).",
       )
       .addUserOption((opt) =>
         opt
           .setName("defendant")
           .setDescription("Who are you suing?")
           .setRequired(true),
-      )
-      .addStringOption((opt) =>
-        opt
-          .setName("claim")
-          .setDescription("Short statement of your claim.")
-          .setRequired(true),
-      )
-      .addStringOption((opt) =>
-        opt
-          .setName("relief")
-          .setDescription(
-            "What do you want the High Court to do? (fine, sentence, etc.)",
-          )
-          .setRequired(false),
       ),
   )
   .addSubcommand((sub) =>
@@ -469,7 +459,7 @@ export async function execute(
 
       // DM the target
       try {
-        const dmEmbed = new EmbedBuilder()
+        const dm = new EmbedBuilder()
           .setTitle("⚖️ High Court Notice — Fine")
           .setDescription(
             `You have been fined **${amt}** Social Credit by the High Court.\n\n` +
@@ -479,7 +469,7 @@ export async function execute(
           .setFooter({
             text: `Ruling by ${judge.tag}`,
           });
-        await target.send({ embeds: [dmEmbed] });
+        await target.send({ embeds: [dm] });
       } catch {
         // ignore DM failures
       }
@@ -523,7 +513,7 @@ export async function execute(
 
       // DM the target
       try {
-        const dmEmbed = new EmbedBuilder()
+        const dm = new EmbedBuilder()
           .setTitle("⚖️ High Court Notice — Sentence")
           .setDescription(
             `You have been sentenced to **${mins} minutes** of Social Credit prison.\n\n` +
@@ -533,7 +523,7 @@ export async function execute(
           .setFooter({
             text: `Ruling by ${judge.tag}`,
           });
-        await target.send({ embeds: [dmEmbed] });
+        await target.send({ embeds: [dm] });
       } catch {
         // ignore DM failures
       }
@@ -561,7 +551,7 @@ export async function execute(
 
       // DM the target
       try {
-        const dmEmbed = new EmbedBuilder()
+        const dm = new EmbedBuilder()
           .setTitle("⚖️ High Court Notice — Pardon")
           .setDescription(
             `The High Court has granted you a **full pardon**.\n\n` +
@@ -571,7 +561,7 @@ export async function execute(
           .setFooter({
             text: `Ruling by ${judge.tag}`,
           });
-        await target.send({ embeds: [dmEmbed] });
+        await target.send({ embeds: [dm] });
       } catch {
         // ignore
       }
@@ -586,13 +576,10 @@ export async function execute(
     return;
   }
 
-  // ----- /credit sue -----
+  // ----- /credit sue (now uses a modal) -----
   if (sub === "sue") {
     const plaintiff = interaction.user;
     const defendant = interaction.options.getUser("defendant", true);
-    const claim = interaction.options.getString("claim", true);
-    const relief =
-      interaction.options.getString("relief") ?? "Not specified.";
 
     if (defendant.bot) {
       await interaction.reply({
@@ -610,62 +597,56 @@ export async function execute(
       return;
     }
 
-    const caseId = nextCaseId++;
-    const nowSec = Math.floor(Date.now() / 1000);
-
-    const embed = new EmbedBuilder()
-      .setTitle(`📜 New Social Credit Lawsuit #${caseId}`)
-      .setDescription(
-        `**Plaintiff:** ${plaintiff}\n` +
-          `**Defendant:** ${defendant}\n\n` +
-          `A new matter has been filed before the **High Court of Yakuza**.`,
+    const modal = new ModalBuilder()
+      .setCustomId(
+        `creditSue|${guildId}|${plaintiff.id}|${defendant.id}`,
       )
-      .addFields(
-        {
-          name: "Claim",
-          value: claim.length > 1024 ? claim.slice(0, 1021) + "…" : claim,
-        },
-        {
-          name: "Requested Relief",
-          value: relief.length > 1024 ? relief.slice(0, 1021) + "…" : relief,
-        },
-        {
-          name: "Status",
-          value:
-            "🟡 Pending review by the High Court. Only the Judge may rule.",
-        },
-      )
-      .setFooter({
-        text: `Filed by ${plaintiff.tag} • Case ${caseId}`,
-      })
-      .setTimestamp();
+      .setTitle("High Court Filing — Social Credit Case");
 
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(
-          `creditCourt|grant|${guildId}|${plaintiff.id}|${defendant.id}|${caseId}`,
-        )
-        .setLabel("Grant Case")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(
-          `creditCourt|deny|${guildId}|${plaintiff.id}|${defendant.id}|${caseId}`,
-        )
-        .setLabel("Deny Case")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(
-          `creditCourt|decline|${guildId}|${plaintiff.id}|${defendant.id}|${caseId}`,
-        )
-        .setLabel("Decline to Hear")
-        .setStyle(ButtonStyle.Secondary),
+    const claimInput = new TextInputBuilder()
+      .setCustomId("claim")
+      .setLabel("Statement of Claim")
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(1024);
+
+    const reliefInput = new TextInputBuilder()
+      .setCustomId("relief")
+      .setLabel("Requested Relief (fine, sentence, etc.)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false)
+      .setMaxLength(256);
+
+    const damagesInput = new TextInputBuilder()
+      .setCustomId("damages")
+      .setLabel("Requested Damages (Social Credit)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false)
+      .setPlaceholder("e.g., 250 — leave blank if none");
+
+    const sentenceInput = new TextInputBuilder()
+      .setCustomId("sentence")
+      .setLabel("Requested Sentence (minutes)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false)
+      .setPlaceholder("e.g., 15 — leave blank if none");
+
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        claimInput,
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        reliefInput,
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        damagesInput,
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        sentenceInput,
+      ),
     );
 
-    await interaction.reply({
-      embeds: [embed],
-      components: [row],
-    });
-
+    await interaction.showModal(modal);
     return;
   }
 
@@ -1392,6 +1373,150 @@ export async function execute(
   }
 }
 
+// ----- Modal handler for /credit sue -----
+
+export async function handleCreditSueModal(
+  interaction: ModalSubmitInteraction,
+): Promise<void> {
+  const customId = interaction.customId;
+  if (!customId.startsWith("creditSue|")) return;
+
+  const parts = customId.split("|");
+  // creditSue|guildId|plaintiffId|defendantId
+  if (parts.length < 4) {
+    await interaction.reply({
+      content: "Malformed High Court filing.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const [, guildId, plaintiffId, defendantId] = parts;
+
+  if (!interaction.guildId || interaction.guildId !== guildId) {
+    await interaction.reply({
+      content: "This High Court filing no longer matches this server.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const claimRaw = interaction.fields.getTextInputValue("claim") ?? "";
+  const reliefRaw =
+    interaction.fields.getTextInputValue("relief") ?? "";
+  const damagesRaw =
+    interaction.fields.getTextInputValue("damages") ?? "";
+  const sentenceRaw =
+    interaction.fields.getTextInputValue("sentence") ?? "";
+
+  const claim = claimRaw.trim();
+  const relief = reliefRaw.trim();
+  const damages = damagesRaw.trim();
+  const sentence = sentenceRaw.trim();
+
+  if (!claim) {
+    await interaction.reply({
+      content: "Your claim cannot be empty.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const client = interaction.client;
+
+  const plaintiff =
+    (await client.users.fetch(plaintiffId).catch(() => null)) ?? null;
+  const defendant =
+    (await client.users.fetch(defendantId).catch(() => null)) ?? null;
+
+  const plaintiffMention = plaintiff
+    ? `${plaintiff}`
+    : `<@${plaintiffId}>`;
+  const defendantMention = defendant
+    ? `${defendant}`
+    : `<@${defendantId}>`;
+
+  const caseId = nextCaseId++;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const claimText =
+    claim.length > 1024 ? claim.slice(0, 1021) + "…" : claim;
+  const reliefText =
+    (relief || "Not specified.").length > 1024
+      ? (relief || "Not specified.").slice(0, 1021) + "…"
+      : relief || "Not specified.";
+
+  const damagesText = damages || "Not specified.";
+  const sentenceText = sentence || "Not specified.";
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📜 New Social Credit Lawsuit #${caseId}`)
+    .setDescription(
+      `**Plaintiff:** ${plaintiffMention}\n` +
+        `**Defendant:** ${defendantMention}\n\n` +
+        `A new matter has been filed before the **High Court of Yakuza**.`,
+    )
+    .addFields(
+      {
+        name: "Claim",
+        value: claimText,
+      },
+      {
+        name: "Requested Relief",
+        value: reliefText,
+      },
+      {
+        name: "Requested Damages",
+        value: damagesText,
+      },
+      {
+        name: "Requested Sentence",
+        value: sentenceText,
+      },
+      {
+        name: "Status",
+        value:
+          "🟡 Pending review by the High Court. Only the Judge may rule.",
+      },
+    )
+    .setFooter({
+      text: `Filed by ${plaintiff?.tag ?? plaintiffId} • Case ${caseId}`,
+    })
+    .setTimestamp(nowSec * 1000);
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(
+        `creditCourt|grant|${guildId}|${plaintiffId}|${defendantId}|${caseId}`,
+      )
+      .setLabel("Grant Case")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(
+        `creditCourt|deny|${guildId}|${plaintiffId}|${defendantId}|${caseId}`,
+      )
+      .setLabel("Deny Case")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(
+        `creditCourt|dismiss|${guildId}|${plaintiffId}|${defendantId}|${caseId}`,
+      )
+      .setLabel("Dismiss Case")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(
+        `creditCourt|trial|${guildId}|${plaintiffId}|${defendantId}|${caseId}`,
+      )
+      .setLabel("Set for Trial")
+      .setStyle(ButtonStyle.Primary),
+  );
+
+  await interaction.reply({
+    embeds: [embed],
+    components: [row],
+  });
+}
+
 // ----- Button handler for High Court lawsuit embeds -----
 
 export async function handleCreditCourtButton(
@@ -1434,15 +1559,28 @@ export async function handleCreditCourtButton(
     decisionEmoji = "🟢";
     decision =
       `${decisionEmoji} **Case Granted.**\n` +
-      `The lawsuit will proceed. Judge may now use **/credit court** to issue fines or sentences.\n` +
+      `The lawsuit is accepted onto the High Court docket. Judge may now use **/credit court** to issue fines or sentences.\n` +
       `Ruling by ${judge} at <t:${ts}:R>.`;
   } else if (action === "deny") {
     decisionEmoji = "🔴";
     decision =
       `${decisionEmoji} **Case Denied.**\n` +
-      `The claims are rejected by the High Court.\n` +
+      `The claims are rejected on their merits. No relief will be granted.\n` +
+      `Ruling by ${judge} at <t:${ts}:R>.`;
+  } else if (action === "dismiss") {
+    decisionEmoji = "⚪";
+    decision =
+      `${decisionEmoji} **Case Dismissed.**\n` +
+      `The matter is dismissed without relief. The parties are returned to the status quo ante.\n` +
+      `Ruling by ${judge} at <t:${ts}:R>.`;
+  } else if (action === "trial") {
+    decisionEmoji = "🟡";
+    decision =
+      `${decisionEmoji} **Case Set for Trial.**\n` +
+      `The High Court sets this matter for formal hearing. Damages and sentences, if any, will be determined after proceedings.\n` +
       `Ruling by ${judge} at <t:${ts}:R>.`;
   } else {
+    // legacy "decline" or unknown
     decisionEmoji = "⚪";
     decision =
       `${decisionEmoji} **Case Declined.**\n` +
@@ -1457,6 +1595,12 @@ export async function handleCreditCourtButton(
   const reliefText =
     original?.fields?.find((f) => f.name === "Requested Relief")
       ?.value ?? "Unknown / missing.";
+  const damagesText =
+    original?.fields?.find((f) => f.name === "Requested Damages")
+      ?.value ?? "Not specified.";
+  const sentenceText =
+    original?.fields?.find((f) => f.name === "Requested Sentence")
+      ?.value ?? "Not specified.";
 
   const verdictEmbed = new EmbedBuilder()
     .setTitle(
@@ -1476,6 +1620,14 @@ export async function handleCreditCourtButton(
       {
         name: "Requested Relief",
         value: reliefText,
+      },
+      {
+        name: "Requested Damages",
+        value: damagesText,
+      },
+      {
+        name: "Requested Sentence",
+        value: sentenceText,
       },
       {
         name: "Decision",
@@ -1504,6 +1656,8 @@ export async function handleCreditCourtButton(
     .addFields(
       { name: "Claim", value: claimText },
       { name: "Requested Relief", value: reliefText },
+      { name: "Requested Damages", value: damagesText },
+      { name: "Requested Sentence", value: sentenceText },
     )
     .setFooter({ text: `Ruled by ${judge.tag}` })
     .setTimestamp();
