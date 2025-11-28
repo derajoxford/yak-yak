@@ -8,12 +8,9 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
   type ButtonInteraction,
-  type ModalSubmitInteraction,
 } from "discord.js";
+import * as DJS from "discord.js";
 import {
   getScore,
   getLeaderboard,
@@ -25,6 +22,11 @@ import {
   getCreditActionChannel,
   setCreditActionChannel,
 } from "../db/socialDb.js";
+
+// Try to grab modal-related builders dynamically (to avoid TS import errors)
+const ModalBuilder: any = (DJS as any).ModalBuilder;
+const TextInputBuilder: any = (DJS as any).TextInputBuilder;
+const TextInputStyle: any = (DJS as any).TextInputStyle;
 
 function scoreLabel(score: number): string {
   // Perfectly neutral
@@ -544,7 +546,7 @@ export async function execute(
             `**Note:** ${reason}`,
         )
         .setFooter({
-          text: `Ruling by ${judge.tag} • ${nowSec}`,
+          text: `Ruling by ${judge.tag} • ${Math.floor(Date.now() / 1000)}`,
         });
 
       await interaction.reply({ embeds: [embed] });
@@ -576,7 +578,7 @@ export async function execute(
     return;
   }
 
-  // ----- /credit sue (now uses a modal) -----
+  // ----- /credit sue (now uses a modal, if available) -----
   if (sub === "sue") {
     const plaintiff = interaction.user;
     const defendant = interaction.options.getUser("defendant", true);
@@ -592,6 +594,16 @@ export async function execute(
     if (defendant.id === plaintiff.id) {
       await interaction.reply({
         content: "You cannot sue yourself. Seek counsel, not chaos.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Safety: if this discord.js build has no modals, bail gracefully
+    if (!ModalBuilder || !TextInputBuilder || !TextInputStyle) {
+      await interaction.reply({
+        content:
+          "This Yak Yak build does not support High Court filing forms yet. Ping Jared to bump discord.js for modals.",
         ephemeral: true,
       });
       return;
@@ -632,18 +644,10 @@ export async function execute(
       .setPlaceholder("e.g., 15 — leave blank if none");
 
     modal.addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(
-        claimInput,
-      ),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(
-        reliefInput,
-      ),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(
-        damagesInput,
-      ),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(
-        sentenceInput,
-      ),
+      new ActionRowBuilder<any>().addComponents(claimInput),
+      new ActionRowBuilder<any>().addComponents(reliefInput),
+      new ActionRowBuilder<any>().addComponents(damagesInput),
+      new ActionRowBuilder<any>().addComponents(sentenceInput),
     );
 
     await interaction.showModal(modal);
@@ -1375,11 +1379,9 @@ export async function execute(
 
 // ----- Modal handler for /credit sue -----
 
-export async function handleCreditSueModal(
-  interaction: ModalSubmitInteraction,
-): Promise<void> {
+export async function handleCreditSueModal(interaction: any): Promise<void> {
   const customId = interaction.customId;
-  if (!customId.startsWith("creditSue|")) return;
+  if (!customId || !customId.startsWith("creditSue|")) return;
 
   const parts = customId.split("|");
   // creditSue|guildId|plaintiffId|defendantId
@@ -1523,7 +1525,7 @@ export async function handleCreditCourtButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
   const customId = interaction.customId;
-  if (!customId.startsWith("creditCourt|")) return;
+  if (!customId || !customId.startsWith("creditCourt|")) return;
 
   const parts = customId.split("|");
   // creditCourt|action|guildId|plaintiffId|defendantId|caseId
