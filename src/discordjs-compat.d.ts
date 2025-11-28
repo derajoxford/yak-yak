@@ -1,10 +1,17 @@
 // src/discordjs-compat.d.ts
-// Relaxed typings for discord.js so Yak Yak compiles cleanly even if
-// the installed discord.js version/types don't line up perfectly.
+// Nuclear option: relaxed typings for discord.js so Yak Yak compiles
+// even if the installed discord.js version/types don't match the code.
 
 declare module "discord.js" {
-  // Add builder exports if the installed discord.js typings don't have them
-  // (older versions won't export these, but our code expects them).
+  // Core client stuff
+  export class Client {
+    [key: string]: any;
+  }
+
+  export const Events: any;
+  export const GatewayIntentBits: any;
+
+  // Slash command builders
   export class SlashCommandBuilder {
     [key: string]: any;
   }
@@ -17,20 +24,35 @@ declare module "discord.js" {
     [key: string]: any;
   }
 
-  // Loosen up EmbedBuilder so TS stops complaining about setTitle, etc.,
-  // and so it's structurally assignable to JSONEncodable<APIEmbed>.
-  export interface EmbedBuilder {
+  // Embeds
+  export class EmbedBuilder {
     [key: string]: any;
+    constructor(...args: any[]);
     toJSON(): any;
   }
 
-  // Same idea for ActionRowBuilder & ButtonBuilder; we don't care about
-  // strict types here — we just want the bot to build and run.
-  export interface ActionRowBuilder<T = any> {
+  // Components
+  export class ActionRowBuilder<T = any> {
     [key: string]: any;
+    constructor(...args: any[]);
   }
 
-  export interface ButtonBuilder {
+  export class ButtonBuilder {
     [key: string]: any;
+    constructor(...args: any[]);
   }
+
+  // Bitfields / enums used as values
+  export const PermissionFlagsBits: any;
+  export const ChannelType: any;
+  export const ButtonStyle: any;
+  export const PermissionsBitField: any;
+
+  // Interaction / guild / message types
+  export type ChatInputCommandInteraction = any;
+  export type AutocompleteInteraction = any;
+  export type ButtonInteraction = any;
+  export type GuildMember = any;
+  export type Message = any;
+  export type TextChannel = any;
 }
