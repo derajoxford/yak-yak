@@ -6,7 +6,7 @@ import {
   EmbedBuilder,
   type Message,
 } from "discord.js";
-import { commandMap } from "./commands/index.js";
+import commands, { commandMap } from "./commands/index.js";
 import { handleMusicButton } from "./commands/music.js";
 import {
   handleCreditCourtButton,
@@ -159,7 +159,7 @@ try {
 // Afterdark keyword responder (NSFW keyword -> programmed response)
 installAfterdarkKeywordListener(client as any);
 
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
   console.log(`Yak Yak ready as ${c.user.tag}`);
   console.log(
     `[config] trigger cooldown: ${triggerCooldownMs}ms (~${
@@ -171,6 +171,25 @@ client.once(Events.ClientReady, (c) => {
       (ACTIVITY_COOLDOWN_MS / 1000 / 60).toFixed(1)
     }m), daily cap: ${ACTIVITY_DAILY_CAP}`,
   );
+
+  // -------- AUTO REGISTER SLASH COMMANDS ON BOOT --------
+  try {
+    const body = commands.map((cmd) => cmd.data.toJSON());
+
+    if (guildId) {
+      await c.application?.commands.set(body, guildId);
+      console.log(
+        `[slash] Registered ${body.length} guild commands for ${guildId}`,
+      );
+    } else {
+      await c.application?.commands.set(body);
+      console.log(
+        `[slash] Registered ${body.length} GLOBAL commands (may take a while to propagate)`,
+      );
+    }
+  } catch (err) {
+    console.error("[slash] Failed to register slash commands:", err);
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
