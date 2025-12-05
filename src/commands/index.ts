@@ -12,7 +12,7 @@ import * as funGate from "./fun_gate.js";
 import * as credit from "./credit.js";
 import * as tithes from "./tithes.js";
 import * as afterdark from "./afterdark.js";
-import * as music from "./music.js";
+import * as disaster from "./disaster.js";
 
 export interface Command {
   data:
@@ -30,7 +30,7 @@ const commands: Command[] = [
   credit,
   tithes,
   afterdark,
-  music,
+  disaster,
 ];
 
 export const commandMap = new Map<string, Command>(
