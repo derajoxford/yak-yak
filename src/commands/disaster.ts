@@ -254,10 +254,10 @@ export async function execute(
     })
     .setTimestamp();
 
+  // Use existing GifKind tags only
   const gif =
-    getRandomGif(guildId, "disaster") ??
-    getRandomGif(guildId, "negative") ??
     getRandomGif(guildId, "sabotage") ??
+    getRandomGif(guildId, "negative") ??
     getRandomGif(guildId, "positive");
 
   if (gif) {
